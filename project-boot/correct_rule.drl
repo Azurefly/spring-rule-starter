@@ -1,0 +1,11 @@
+package rules;
+
+import com.example.ruleengine.Order;
+
+rule "Free Shipping Test"
+when
+    $o : Order(amount > 100)
+then
+    $o.setFreeShipping(true);
+    System.out.println("Free shipping applied by database rule");
+end

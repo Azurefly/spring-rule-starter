@@ -1,0 +1,38 @@
+
+spring:
+  datasource:
+    url: jdbc:postgresql://192.168.31.9:15432/postgres?sslmode=disable
+    username: postgres
+    password: pansuj123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        type:
+          preferred_instant_jdbc_type: TIMESTAMP
+        globally_quoted_identifiers: false
+        use_sql_comments: false
+  redis:
+    host: 192.168.31.9
+    port: 6379
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.example.api.drools: TRACE
+    com.example.api.service: TRACE
+    com.example.api.controller: TRACE
+    org.kie: DEBUG
+    org.drools: DEBUG
+    root: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"

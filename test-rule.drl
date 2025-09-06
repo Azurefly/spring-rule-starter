@@ -1,0 +1,11 @@
+package com.example.rules;
+
+import com.example.common.Order;
+
+rule "Test Discount Rule"
+when
+    $order : Order(amount > 100)
+then
+    $order.setDiscount(0.1);
+    System.out.println("Applied 10% discount to order: " + $order.getId());
+end
