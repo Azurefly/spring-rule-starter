@@ -12,6 +12,26 @@ permissions:
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: ruledb
+          POSTGRES_USER: ruleuser
+          POSTGRES_PASSWORD: rulepass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ruleuser -d ruledb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DB_URL: jdbc:postgresql://localhost:5432/ruledb
+      DB_USERNAME: ruleuser
+      DB_PASSWORD: rulepass
+      RULE_REDIS_ENABLED: 'false'
+      MANAGEMENT_REDIS_HEALTH_ENABLED: 'false'
     steps:
       - uses: actions/checkout@v4
       - name: Set up Java 8
