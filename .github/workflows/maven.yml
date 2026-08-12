@@ -1,21 +1,55 @@
-
-name: Maven CI
+name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  backend-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up JDK 17
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: temurin
+          cache: maven
+      - name: Test backend
+        run: mvn -B clean verify
+
+  backend-jdk17-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: 'temurin'
-      - name: Build with Maven
-        run: mvn -B -DskipTests clean install
+          distribution: temurin
+          cache: maven
+      - name: Verify Java 17 build compatibility
+        run: mvn -B -DskipTests clean verify
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
