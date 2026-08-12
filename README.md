@@ -16,6 +16,8 @@ Spring Rule Starter provides two things in one repository:
 - Failed rule replacement preserves the last-known-good container.
 - Rule execution and hot replacement are protected by a read/write lifecycle lock so an active container is not disposed while a request is using it.
 - Starter auto-configuration backs off when an application supplies its own `RuleEngine`.
+- The bundled admin server uses Flyway migrations and Hibernate schema validation rather than implicit schema mutation.
+- The in-memory rule runtime contributes to standard Spring Boot Actuator health.
 - Existing v0.1 rule persistence, history, rollback, lifecycle, Redis refresh and Vue management features remain available.
 
 ## Project structure
@@ -35,7 +37,8 @@ spring-rule-starter/
 ├─ project-api
 │  └─ Persistence, rule lifecycle, version history and admin REST API
 ├─ project-boot
-│  └─ Runnable reference management server
+│  ├─ Runnable reference management server
+│  └─ src/main/resources/db/migration/  versioned Flyway schema migrations
 ├─ frontend
 │  └─ Vue 3 rule-management console
 ├─ schema.sql
@@ -67,7 +70,8 @@ The admin application no longer owns a second dynamic Drools compiler. `KieManag
 - Java source/target: 8
 - Spring Boot: 2.7.13
 - Drools: 7.59.0.Final
-- PostgreSQL: local example uses 15
+- PostgreSQL: local and CI baseline uses 15
+- Flyway: managed by Spring Boot 2.7 dependency management
 - Redis: optional, local example uses 7
 - Frontend: Vue 3 + Vite
 
@@ -192,6 +196,8 @@ mvn -pl project-boot -am spring-boot:run
 
 Backend default: `http://localhost:8080`.
 
+On startup, Flyway applies pending migrations from `project-boot/src/main/resources/db/migration`. Hibernate then runs in `validate` mode by default; it no longer changes the schema itself.
+
 ### 4. Start frontend
 
 ```bash
@@ -211,14 +217,44 @@ The reference server reads environment variables directly; `.env` parsing is not
 | `DB_URL` | `jdbc:postgresql://localhost:5432/ruledb` | PostgreSQL JDBC URL |
 | `DB_USERNAME` | `ruleuser` | Database user |
 | `DB_PASSWORD` | `rulepass` | Local compose password |
+| `FLYWAY_ENABLED` | `true` | Apply versioned database migrations on startup |
+| `JPA_DDL_AUTO` | `validate` | Hibernate schema action; keep `validate` for managed environments |
+| `JPA_SHOW_SQL` | `false` | Enable Hibernate SQL logging |
 | `SERVER_PORT` | `8080` | Backend HTTP port |
 | `RULE_REDIS_ENABLED` | `false` | Enable Redis rule-refresh pub/sub |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
 | `RULE_CORS_ALLOWED_ORIGIN_PATTERNS` | `http://localhost:5173` | Allowed frontend origins |
 | `RULE_MAX_FILE_SIZE` | `1MB` | Maximum uploaded DRL size |
+| `MANAGEMENT_ENDPOINTS` | `health,info` | Actuator endpoints exposed over HTTP |
+| `MANAGEMENT_HEALTH_SHOW_DETAILS` | `never` | Actuator health detail exposure |
+| `MANAGEMENT_REDIS_HEALTH_ENABLED` | `false` | Enable Redis health contributor when Redis is intentionally required |
 
 Do not commit production credentials. If a real credential was previously committed, rotate it; deleting it from the current tree does not erase Git history.
+
+## Database migrations
+
+The bundled management server treats Flyway as the owner of schema evolution.
+
+- `V1__baseline_rule_schema.sql` creates/adopts the v0.1/v0.2 rule tables.
+- `baseline-on-migrate=true` with baseline version `0` lets an existing development schema enter Flyway management before V1 is applied.
+- Hibernate defaults to `ddl-auto=validate`, so an entity/schema mismatch fails startup instead of silently changing the database.
+- New schema changes should be added as `V2__...sql`, `V3__...sql`, and so on. Do not edit a migration after it has been released to shared environments.
+- Flyway `clean` is disabled in application configuration.
+
+The root-level `schema.sql` is retained as a human-readable/reference schema; `project-boot` no longer uses an unversioned `schema.sql` startup initializer.
+
+## Health checks
+
+The admin server uses Spring Boot Actuator. By default only `health` and `info` are exposed.
+
+```text
+GET /actuator/health
+```
+
+The `ruleEngine` health contributor reports the in-memory runtime status and loaded-rule count. Health details are hidden by default. Redis health probing is disabled by default because Redis refresh is an optional capability; enable it only when Redis is part of the deployment's required availability boundary.
+
+The existing `/api/rules/health` endpoint remains available for rule-management-specific information, but deployment systems should prefer the standard Actuator health endpoint.
 
 ## Rule lifecycle in the admin application
 
@@ -275,7 +311,7 @@ The database remains the source of truth. Redis pub/sub is used only for local r
 
 GitHub Actions verifies:
 
-1. `mvn clean verify` on Java 8, including `spring-rule-core`, auto-configuration and management lifecycle tests.
+1. `mvn clean verify` on Java 8 against a real PostgreSQL 15 service, including Flyway migration, Hibernate schema validation, `spring-rule-core`, auto-configuration and management lifecycle tests.
 2. Java 17 build compatibility.
 3. `npm ci && npm run build` for the Vue frontend.
 
@@ -285,6 +321,9 @@ Key regression guarantees include:
 - validation does not activate a rule;
 - invalid replacement keeps the last-known-good container;
 - starter auto-configures by default, can be disabled, and backs off for a user bean;
+- Flyway creates/adopts the expected PostgreSQL schema and records migration V1;
+- the Spring Boot management application starts with Hibernate schema validation enabled;
+- the `RuleEngine` Actuator health contributor reports `UP` during a healthy application context;
 - management create history stores rollback content;
 - failed management updates preserve active content/version;
 - rollback creates a new version from a successful snapshot.
@@ -294,7 +333,6 @@ Key regression guarantees include:
 High-value next steps after v0.2:
 
 - authenticated/authorized management APIs;
-- Flyway/Liquibase schema migrations instead of `ddl-auto=update`;
 - Micrometer compile/execution/refresh metrics;
 - rule namespaces / rule sets / agenda-group management;
 - fact type adapters and JSON-to-DTO binding;
