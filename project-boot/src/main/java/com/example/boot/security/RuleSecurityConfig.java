@@ -1,5 +1,7 @@
 package com.example.boot.security;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -13,7 +15,17 @@ import javax.servlet.http.HttpServletResponse;
 import java.nio.charset.StandardCharsets;
 
 @Configuration
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 public class RuleSecurityConfig {
+
+    @Bean
+    public FilterRegistrationBean<RuleApiKeyAuthenticationFilter> ruleApiKeyFilterRegistration(
+            RuleApiKeyAuthenticationFilter filter) {
+        FilterRegistrationBean<RuleApiKeyAuthenticationFilter> registration = new FilterRegistrationBean<>();
+        registration.setFilter(filter);
+        registration.setEnabled(false);
+        return registration;
+    }
 
     @Bean
     public SecurityFilterChain ruleSecurityFilterChain(HttpSecurity http,
