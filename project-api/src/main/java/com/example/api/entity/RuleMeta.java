@@ -39,8 +39,14 @@ public class RuleMeta {
     private String lastBuildMessage;
 
     private LocalDateTime lastBuildAt;
+
+    @Column(length = 100)
     private String createdBy;
+
+    @Column(nullable = false)
     private LocalDateTime createdAt;
+
+    @Column(nullable = false)
     private LocalDateTime updatedAt;
 
     public RuleMeta() {
