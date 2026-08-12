@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -43,34 +44,69 @@ public class DroolsRuleEngine implements RuleEngine {
     private final ReentrantReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
     private final String releaseGroupId;
     private final String versionPrefix;
+    private final List<RuleEngineListener> listeners;
 
     public DroolsRuleEngine() {
-        this(DEFAULT_RELEASE_GROUP_ID, DEFAULT_VERSION_PREFIX);
+        this(DEFAULT_RELEASE_GROUP_ID, DEFAULT_VERSION_PREFIX, Collections.<RuleEngineListener>emptyList());
     }
 
     public DroolsRuleEngine(String releaseGroupId, String versionPrefix) {
+        this(releaseGroupId, versionPrefix, Collections.<RuleEngineListener>emptyList());
+    }
+
+    public DroolsRuleEngine(String releaseGroupId,
+                            String versionPrefix,
+                            Iterable<RuleEngineListener> listeners) {
         this.releaseGroupId = requireText(releaseGroupId, "releaseGroupId");
         this.versionPrefix = requireText(versionPrefix, "versionPrefix");
+        List<RuleEngineListener> copy = new ArrayList<>();
+        if (listeners != null) {
+            for (RuleEngineListener listener : listeners) {
+                if (listener != null) {
+                    copy.add(listener);
+                }
+            }
+        }
+        this.listeners = Collections.unmodifiableList(copy);
     }
 
     @Override
     public RuleBuildResult validate(String ruleName, String drl) {
+        long started = System.nanoTime();
         CompiledRule candidate = compile(ruleName, drl);
-        if (!candidate.result.isSuccess()) {
-            return candidate.result;
+        RuleBuildResult result = candidate.result;
+        if (result.isSuccess()) {
+            String buildMessage = result.getMessage();
+            disposeQuietly(candidate.container);
+            if (buildMessage != null && buildMessage.startsWith(WARNING_PREFIX)) {
+                result = RuleBuildResult.success("validation passed with warnings: "
+                        + buildMessage.substring(WARNING_PREFIX.length()));
+            } else {
+                result = RuleBuildResult.success("validation passed");
+            }
         }
-        String buildMessage = candidate.result.getMessage();
-        disposeQuietly(candidate.container);
-        if (buildMessage != null && buildMessage.startsWith(WARNING_PREFIX)) {
-            return RuleBuildResult.success("validation passed with warnings: " + buildMessage.substring(WARNING_PREFIX.length()));
-        }
-        return RuleBuildResult.success("validation passed");
+        publish(new RuleEngineEvent(
+                RuleEngineEvent.Operation.VALIDATE,
+                ruleName,
+                result.isSuccess(),
+                System.nanoTime() - started,
+                0,
+                result.getMessage()));
+        return result;
     }
 
     @Override
     public RuleBuildResult install(String ruleName, String drl) {
+        long started = System.nanoTime();
         CompiledRule candidate = compile(ruleName, drl);
         if (!candidate.result.isSuccess()) {
+            publish(new RuleEngineEvent(
+                    RuleEngineEvent.Operation.INSTALL,
+                    ruleName,
+                    false,
+                    System.nanoTime() - started,
+                    0,
+                    candidate.result.getMessage()));
             return candidate.result;
         }
 
@@ -79,27 +115,58 @@ public class DroolsRuleEngine implements RuleEngine {
             KieContainer previous = cache.put(ruleName, candidate.container);
             disposeQuietly(previous);
             logger.info("Rule [{}] compiled and activated", ruleName);
-            return candidate.result;
         } finally {
             lifecycleLock.writeLock().unlock();
         }
+
+        publish(new RuleEngineEvent(
+                RuleEngineEvent.Operation.INSTALL,
+                ruleName,
+                true,
+                System.nanoTime() - started,
+                0,
+                candidate.result.getMessage()));
+        return candidate.result;
     }
 
     @Override
     public int execute(String ruleName, Object fact) {
         if (fact == null) {
-            throw new IllegalArgumentException("Fact cannot be null");
+            IllegalArgumentException failure = new IllegalArgumentException("Fact cannot be null");
+            publish(new RuleEngineEvent(
+                    RuleEngineEvent.Operation.EXECUTE,
+                    ruleName,
+                    false,
+                    0L,
+                    0,
+                    failure.getMessage()));
+            throw failure;
         }
         return execute(ruleName, Collections.singletonList(fact), Collections.<String, Object>emptyMap());
     }
 
     @Override
     public int execute(String ruleName, Iterable<?> facts, Map<String, Object> globals) {
-        String normalizedName = requireText(ruleName, "ruleName");
-        if (facts == null) {
-            throw new IllegalArgumentException("Facts cannot be null");
+        long started = System.nanoTime();
+        String normalizedName;
+        try {
+            normalizedName = requireText(ruleName, "ruleName");
+            if (facts == null) {
+                throw new IllegalArgumentException("Facts cannot be null");
+            }
+        } catch (RuntimeException ex) {
+            publish(new RuleEngineEvent(
+                    RuleEngineEvent.Operation.EXECUTE,
+                    ruleName,
+                    false,
+                    System.nanoTime() - started,
+                    0,
+                    ex.getMessage()));
+            throw ex;
         }
 
+        int firedRules = 0;
+        RuntimeException failure = null;
         lifecycleLock.readLock().lock();
         KieSession session = null;
         try {
@@ -120,17 +187,38 @@ public class DroolsRuleEngine implements RuleEngine {
                 }
                 session.insert(fact);
             }
-            return session.fireAllRules();
+            firedRules = session.fireAllRules();
         } catch (RuntimeException ex) {
-            throw ex;
+            failure = ex;
         } catch (Exception ex) {
-            throw new IllegalStateException("Failed to execute rule [" + normalizedName + "]: " + ex.getMessage(), ex);
+            failure = new IllegalStateException(
+                    "Failed to execute rule [" + normalizedName + "]: " + ex.getMessage(), ex);
         } finally {
             if (session != null) {
                 session.dispose();
             }
             lifecycleLock.readLock().unlock();
         }
+
+        if (failure != null) {
+            publish(new RuleEngineEvent(
+                    RuleEngineEvent.Operation.EXECUTE,
+                    normalizedName,
+                    false,
+                    System.nanoTime() - started,
+                    0,
+                    failure.getMessage()));
+            throw failure;
+        }
+
+        publish(new RuleEngineEvent(
+                RuleEngineEvent.Operation.EXECUTE,
+                normalizedName,
+                true,
+                System.nanoTime() - started,
+                firedRules,
+                "executed"));
+        return firedRules;
     }
 
     @Override
@@ -219,6 +307,17 @@ public class DroolsRuleEngine implements RuleEngine {
             removeModuleQuietly(releaseId);
             logger.error("Failed to compile rule [{}]", normalizedName, ex);
             return CompiledRule.failure(exceptionMessage(ex));
+        }
+    }
+
+    private void publish(RuleEngineEvent event) {
+        for (RuleEngineListener listener : listeners) {
+            try {
+                listener.onEvent(event);
+            } catch (RuntimeException ex) {
+                logger.warn("RuleEngineListener [{}] failed and was isolated from the runtime",
+                        listener.getClass().getName(), ex);
+            }
         }
     }
 
