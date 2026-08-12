@@ -9,25 +9,24 @@ Spring Rule Starter provides two things in one repository:
 
 ## v0.2 highlights
 
-- New Spring-independent `spring-rule-core` runtime API.
-- New `spring-rule-spring-boot-autoconfigure` module.
-- New one-dependency `spring-rule-spring-boot-starter` module.
-- The bundled admin application now delegates to the same public `RuleEngine` implementation used by starter consumers.
-- Failed rule replacement preserves the last-known-good container.
-- Rule execution and hot replacement are protected by a read/write lifecycle lock so an active container is not disposed while a request is using it.
-- Starter auto-configuration backs off when an application supplies its own `RuleEngine`.
-- The bundled admin server uses Flyway migrations and Hibernate schema validation rather than implicit schema mutation.
-- The in-memory rule runtime contributes to standard Spring Boot Actuator health.
-- Existing v0.1 rule persistence, history, rollback, lifecycle, Redis refresh and Vue management features remain available.
+- Spring-independent `spring-rule-core` runtime API.
+- Spring Boot auto-configuration and one-dependency starter modules.
+- Last-known-good rule replacement and read/write locking around execution/hot replacement.
+- Shared runtime implementation between Starter consumers and the bundled management server.
+- Flyway-managed PostgreSQL schema with Hibernate `validate` mode.
+- Standard Actuator health for the in-memory rule runtime.
+- Optional low-cardinality Micrometer metrics when a `MeterRegistry` is present.
+- Optional stateless API-key security for the management server with `READER` and `ADMIN` scopes.
+- Version history, rollback, lifecycle APIs, optional Redis refresh and Vue management UI.
 
 ## Project structure
 
 ```text
 spring-rule-starter/
 ├─ spring-rule-core
-│  └─ Spring-independent public RuleEngine API + Drools implementation
+│  └─ Spring-independent RuleEngine API, Drools runtime and observability events
 ├─ spring-rule-spring-boot-autoconfigure
-│  └─ spring.rule.* properties and RuleEngine auto-configuration
+│  └─ spring.rule.* properties, RuleEngine auto-config and optional Micrometer adapter
 ├─ spring-rule-spring-boot-starter
 │  └─ Dependency starter consumed by business applications
 ├─ project-common
@@ -38,6 +37,7 @@ spring-rule-starter/
 │  └─ Persistence, rule lifecycle, version history and admin REST API
 ├─ project-boot
 │  ├─ Runnable reference management server
+│  ├─ API-key security / Actuator health
 │  └─ src/main/resources/db/migration/  versioned Flyway schema migrations
 ├─ frontend
 │  └─ Vue 3 rule-management console
@@ -45,7 +45,7 @@ spring-rule-starter/
 └─ docker-compose.yml
 ```
 
-The architectural boundary in v0.2 is intentional:
+The architectural boundary is intentional:
 
 ```text
 Business application
@@ -54,16 +54,16 @@ Business application
 spring-rule-spring-boot-starter
       │
       ▼
-spring-rule-spring-boot-autoconfigure
+spring-rule-spring-boot-autoconfigure ── optional Micrometer adapter
       │
       ▼
 spring-rule-core  ◄──────── project-api / KieManager
       │
       ▼
 Drools / KIE
-```
 
-The admin application no longer owns a second dynamic Drools compiler. `KieManager` is now an adapter for database loading and build-status semantics around the public `RuleEngine`.
+Bundled management security stays in project-boot, not in the reusable core.
+```
 
 ## Runtime baseline
 
@@ -144,6 +144,8 @@ spring:
     enabled: true
     release-group-id: com.mycompany.rules
     version-prefix: 1.0
+    metrics:
+      enabled: true
 ```
 
 | Property | Default | Description |
@@ -151,8 +153,9 @@ spring:
 | `spring.rule.enabled` | `true` | Enable `RuleEngine` auto-configuration |
 | `spring.rule.release-group-id` | `com.azurefly.rules` | GroupId used for generated in-memory KIE modules |
 | `spring.rule.version-prefix` | `1.0` | Prefix used for generated dynamic module versions |
+| `spring.rule.metrics.enabled` | `true` | Register Micrometer listener when a `MeterRegistry` exists |
 
-Set `spring.rule.enabled=false` to disable the starter. If the application declares its own `RuleEngine` bean, the built-in auto-configuration backs off automatically.
+Set `spring.rule.enabled=false` to disable the starter. If the application declares its own `RuleEngine` bean, built-in auto-configuration backs off automatically.
 
 ### Batch facts and globals
 
@@ -167,6 +170,19 @@ int fired = ruleEngine.execute(
 ```
 
 Every invocation uses a fresh `KieSession` and disposes it after execution.
+
+### Observability extension point
+
+`spring-rule-core` emits neutral `RuleEngineEvent` objects to optional `RuleEngineListener` implementations. Listener failures are isolated from rule execution, so a metrics/tracing adapter cannot make a valid rule call fail.
+
+If Micrometer is on the classpath and a `MeterRegistry` bean exists, the Boot auto-configuration records:
+
+| Metric | Type | Tags / meaning |
+|---|---|---|
+| `spring.rule.operation` | Timer | `operation=validate|install|execute`, `outcome=success|failure` |
+| `spring.rule.rules.fired` | Distribution summary | Number of rules fired by successful executions |
+
+Rule names are intentionally **not** metric tags to avoid high-cardinality time series. Add Actuator/Prometheus in the consuming application if HTTP scraping/export is required.
 
 ## Run the bundled management application
 
@@ -208,6 +224,44 @@ npm run dev
 
 Frontend default: `http://localhost:5173`.
 
+## Management API security
+
+Security is **disabled by default only for local-development compatibility**. Shared, remote or controlled deployments should enable it and terminate TLS in front of the service.
+
+```bash
+RULE_SECURITY_ENABLED=true
+RULE_ADMIN_API_KEY='replace-with-a-long-random-secret'
+# Optional read-only key:
+RULE_READER_API_KEY='replace-with-a-different-random-secret'
+```
+
+The default header is:
+
+```text
+X-Rule-Api-Key: <secret>
+```
+
+Both configured keys must be at least 16 characters. Enabling security without a valid admin key fails application startup rather than silently disabling protection.
+
+Authorization when enabled:
+
+| Surface | READER | ADMIN | No key |
+|---|---:|---:|---:|
+| `GET /api/rules/**` | Yes | Yes | No |
+| non-GET `/api/rules/**` | No | Yes | No |
+| `/actuator/health`, `/actuator/info` | Yes | Yes | Yes |
+| other exposed `/actuator/**` | No | Yes | No |
+
+Rule execution is a POST operation and therefore requires `ADMIN`; DRL execution can call Java methods and must not be treated as a harmless read.
+
+The Vue development client stores an entered key only in `sessionStorage`. On the first 401 challenge it asks for a key and retries the request once. You can clear the current browser-session key from the console with:
+
+```javascript
+window.ruleAdminAuth.clear()
+```
+
+For SSO, MFA, per-user audit attribution or centralized revocation, use an identity-aware gateway or replace the reference API-key layer with the deployment's standard identity system.
+
 ## Management application configuration
 
 The reference server reads environment variables directly; `.env` parsing is not required.
@@ -224,13 +278,18 @@ The reference server reads environment variables directly; `.env` parsing is not
 | `RULE_REDIS_ENABLED` | `false` | Enable Redis rule-refresh pub/sub |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
+| `RULE_SECURITY_ENABLED` | `false` | Enable scoped API-key authentication |
+| `RULE_SECURITY_HEADER` | `X-Rule-Api-Key` | API-key request header |
+| `RULE_ADMIN_API_KEY` | empty | Required admin key when security is enabled |
+| `RULE_READER_API_KEY` | empty | Optional read-only key |
+| `RULE_METRICS_ENABLED` | `true` | Enable Micrometer listener when a registry is available |
 | `RULE_CORS_ALLOWED_ORIGIN_PATTERNS` | `http://localhost:5173` | Allowed frontend origins |
 | `RULE_MAX_FILE_SIZE` | `1MB` | Maximum uploaded DRL size |
 | `MANAGEMENT_ENDPOINTS` | `health,info` | Actuator endpoints exposed over HTTP |
 | `MANAGEMENT_HEALTH_SHOW_DETAILS` | `never` | Actuator health detail exposure |
 | `MANAGEMENT_REDIS_HEALTH_ENABLED` | `false` | Enable Redis health contributor when Redis is intentionally required |
 
-Do not commit production credentials. If a real credential was previously committed, rotate it; deleting it from the current tree does not erase Git history.
+Do not commit production credentials or API keys. If a real credential was previously committed, rotate it; deleting it from the current tree does not erase Git history.
 
 ## Database migrations
 
@@ -244,7 +303,7 @@ The bundled management server treats Flyway as the owner of schema evolution.
 
 The root-level `schema.sql` is retained as a human-readable/reference schema; `project-boot` no longer uses an unversioned `schema.sql` startup initializer.
 
-## Health checks
+## Health and metrics endpoints
 
 The admin server uses Spring Boot Actuator. By default only `health` and `info` are exposed.
 
@@ -252,7 +311,15 @@ The admin server uses Spring Boot Actuator. By default only `health` and `info` 
 GET /actuator/health
 ```
 
-The `ruleEngine` health contributor reports the in-memory runtime status and loaded-rule count. Health details are hidden by default. Redis health probing is disabled by default because Redis refresh is an optional capability; enable it only when Redis is part of the deployment's required availability boundary.
+The `ruleEngine` health contributor reports the in-memory runtime status and loaded-rule count. Health details are hidden by default. Redis health probing is disabled by default because Redis refresh is optional.
+
+To expose the standard metrics endpoint, configure for example:
+
+```bash
+MANAGEMENT_ENDPOINTS=health,info,metrics
+```
+
+When bundled security is enabled, non-health Actuator endpoints require the `ADMIN` key. Do not expose metrics endpoints unauthenticated on an untrusted network.
 
 The existing `/api/rules/health` endpoint remains available for rule-management-specific information, but deployment systems should prefer the standard Actuator health endpoint.
 
@@ -311,7 +378,7 @@ The database remains the source of truth. Redis pub/sub is used only for local r
 
 GitHub Actions verifies:
 
-1. `mvn clean verify` on Java 8 against a real PostgreSQL 15 service, including Flyway migration, Hibernate schema validation, `spring-rule-core`, auto-configuration and management lifecycle tests.
+1. `mvn clean verify` on Java 8 against a real PostgreSQL 15 service, including Flyway migration, Hibernate schema validation, Starter/core, Micrometer, security and management lifecycle tests.
 2. Java 17 build compatibility.
 3. `npm ci && npm run build` for the Vue frontend.
 
@@ -320,22 +387,26 @@ Key regression guarantees include:
 - public core runtime compiles and executes a standalone fact type;
 - validation does not activate a rule;
 - invalid replacement keeps the last-known-good container;
-- starter auto-configures by default, can be disabled, and backs off for a user bean;
-- Flyway creates/adopts the expected PostgreSQL schema and records migration V1;
-- the Spring Boot management application starts with Hibernate schema validation enabled;
+- observability-listener failures cannot break rule execution;
+- Starter auto-configures by default, can be disabled, and backs off for a user bean;
+- Micrometer integration records low-cardinality operation metrics only when a registry is present;
+- Flyway creates/adopts the expected PostgreSQL schema and Hibernate validates it;
 - the `RuleEngine` Actuator health contributor reports `UP` during a healthy application context;
+- security-enabled startup requires a valid admin key;
+- unauthenticated API calls are rejected, readers cannot mutate, and admins can mutate;
+- non-health Actuator endpoints are admin-only when security is enabled;
 - management create history stores rollback content;
 - failed management updates preserve active content/version;
 - rollback creates a new version from a successful snapshot.
 
 ## Roadmap
 
-High-value next steps after v0.2:
+High-value next steps after the current v0.2 baseline:
 
-- authenticated/authorized management APIs;
-- Micrometer compile/execution/refresh metrics;
 - rule namespaces / rule sets / agenda-group management;
 - fact type adapters and JSON-to-DTO binding;
+- durable per-user audit attribution / identity-provider integration for the admin server;
+- Prometheus/OpenTelemetry examples and dashboards;
 - Maven Central publishing and signed release automation;
 - a separate compatibility line for Spring Boot 3 / current Drools while preserving this Java 8 baseline.
 
