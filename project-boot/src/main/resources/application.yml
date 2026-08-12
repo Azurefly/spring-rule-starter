@@ -33,11 +33,20 @@ spring:
 server:
   port: ${SERVER_PORT:8080}
 
+spring.rule:
+  metrics:
+    enabled: ${RULE_METRICS_ENABLED:true}
+
 rule:
   redis:
     enabled: ${RULE_REDIS_ENABLED:false}
   cors:
     allowed-origin-patterns: ${RULE_CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:5173}
+  security:
+    enabled: ${RULE_SECURITY_ENABLED:false}
+    header-name: ${RULE_SECURITY_HEADER:X-Rule-Api-Key}
+    admin-api-key: ${RULE_ADMIN_API_KEY:}
+    reader-api-key: ${RULE_READER_API_KEY:}
 
 management:
   endpoints:
