@@ -29,13 +29,12 @@ spring:
     multipart:
       max-file-size: ${RULE_MAX_FILE_SIZE:1MB}
       max-request-size: ${RULE_MAX_REQUEST_SIZE:1MB}
+  rule:
+    metrics:
+      enabled: ${RULE_METRICS_ENABLED:true}
 
 server:
   port: ${SERVER_PORT:8080}
-
-spring.rule:
-  metrics:
-    enabled: ${RULE_METRICS_ENABLED:true}
 
 rule:
   redis:
