@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Flyway-managed schema migrations for the bundled PostgreSQL rule-management server.
+- Standard Spring Boot Actuator health contribution for the in-memory `RuleEngine`.
+- PostgreSQL 15 service-backed CI integration test covering Flyway migration, Hibernate schema validation and application startup.
+
+### Changed
+
+- Bundled admin server defaults Hibernate to `ddl-auto=validate` instead of mutating schemas with `ddl-auto=update`.
+- Removed the legacy unversioned `project-boot/src/main/resources/schema.sql` initialization path.
+- Actuator exposes only `health,info` by default and optional Redis health probing is disabled unless explicitly enabled.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
