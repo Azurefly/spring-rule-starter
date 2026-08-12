@@ -3,6 +3,9 @@ package com.azurefly.rule.core;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -54,5 +57,25 @@ class DroolsRuleEngineTest {
         TestFact fact = new TestFact(200);
         assertEquals(1, engine.execute("safe", fact));
         assertTrue(fact.isAccepted());
+    }
+
+    @Test
+    void listenerFailuresAreIsolatedFromTheRuntime() {
+        AtomicInteger calls = new AtomicInteger();
+        RuleEngineListener failingListener = event -> {
+            calls.incrementAndGet();
+            throw new IllegalStateException("observer failed");
+        };
+        DroolsRuleEngine observed = new DroolsRuleEngine(
+                DroolsRuleEngine.DEFAULT_RELEASE_GROUP_ID,
+                DroolsRuleEngine.DEFAULT_VERSION_PREFIX,
+                Collections.singletonList(failingListener));
+        try {
+            assertTrue(observed.install("observed", "package rules; rule \"always\" when then end").isSuccess());
+            assertEquals(1, observed.execute("observed", new Object()));
+            assertEquals(2, calls.get());
+        } finally {
+            observed.close();
+        }
     }
 }
