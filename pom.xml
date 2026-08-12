@@ -5,11 +5,11 @@
 
   <groupId>com.azurefly</groupId>
   <artifactId>spring-rule-starter</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <packaging>pom</packaging>
 
   <name>Spring Rule Starter</name>
-  <description>Spring Boot rule management baseline with dynamic Drools loading, versioning and hot refresh.</description>
+  <description>Spring Boot rule management and reusable Drools starter with dynamic compilation, execution, versioning and hot refresh.</description>
   <url>https://github.com/Azurefly/spring-rule-starter</url>
 
   <licenses>
@@ -37,6 +37,9 @@
   <modules>
     <module>project-common</module>
     <module>project-ruleengine</module>
+    <module>spring-rule-core</module>
+    <module>spring-rule-spring-boot-autoconfigure</module>
+    <module>spring-rule-spring-boot-starter</module>
     <module>project-api</module>
     <module>project-boot</module>
   </modules>
