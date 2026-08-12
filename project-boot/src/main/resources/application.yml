@@ -1,38 +1,40 @@
-
 spring:
   datasource:
-    url: jdbc:postgresql://192.168.31.9:15432/postgres?sslmode=disable
-    username: postgres
-    password: pansuj123
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ruledb}
+    username: ${DB_USERNAME:ruleuser}
+    password: ${DB_PASSWORD:rulepass}
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
-      ddl-auto: update
-    show-sql: true
+      ddl-auto: ${JPA_DDL_AUTO:update}
+    show-sql: ${JPA_SHOW_SQL:false}
+    open-in-view: false
     properties:
       hibernate:
         jdbc:
           lob:
             non_contextual_creation: true
         dialect: org.hibernate.dialect.PostgreSQLDialect
-        type:
-          preferred_instant_jdbc_type: TIMESTAMP
-        globally_quoted_identifiers: false
-        use_sql_comments: false
   redis:
-    host: 192.168.31.9
-    port: 6379
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+  servlet:
+    multipart:
+      max-file-size: ${RULE_MAX_FILE_SIZE:1MB}
+      max-request-size: ${RULE_MAX_REQUEST_SIZE:1MB}
 
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
+
+rule:
+  redis:
+    enabled: ${RULE_REDIS_ENABLED:false}
+  cors:
+    allowed-origin-patterns: ${RULE_CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:5173}
 
 logging:
   level:
-    com.example.api.drools: TRACE
-    com.example.api.service: TRACE
-    com.example.api.controller: TRACE
-    org.kie: DEBUG
-    org.drools: DEBUG
-    root: DEBUG
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    com.example: ${APP_LOG_LEVEL:INFO}
+    org.kie: ${KIE_LOG_LEVEL:WARN}
+    org.drools: ${DROOLS_LOG_LEVEL:WARN}
+    root: ${ROOT_LOG_LEVEL:INFO}
