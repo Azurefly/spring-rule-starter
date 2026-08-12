@@ -4,9 +4,16 @@ spring:
     username: ${DB_USERNAME:ruleuser}
     password: ${DB_PASSWORD:rulepass}
     driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: true
+    clean-disabled: true
   jpa:
     hibernate:
-      ddl-auto: ${JPA_DDL_AUTO:update}
+      ddl-auto: ${JPA_DDL_AUTO:validate}
     show-sql: ${JPA_SHOW_SQL:false}
     open-in-view: false
     properties:
@@ -32,9 +39,22 @@ rule:
   cors:
     allowed-origin-patterns: ${RULE_CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:5173}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${MANAGEMENT_ENDPOINTS:health,info}
+  endpoint:
+    health:
+      show-details: ${MANAGEMENT_HEALTH_SHOW_DETAILS:never}
+  health:
+    redis:
+      enabled: ${MANAGEMENT_REDIS_HEALTH_ENABLED:false}
+
 logging:
   level:
     com.example: ${APP_LOG_LEVEL:INFO}
+    com.azurefly: ${STARTER_LOG_LEVEL:INFO}
     org.kie: ${KIE_LOG_LEVEL:WARN}
     org.drools: ${DROOLS_LOG_LEVEL:WARN}
     root: ${ROOT_LOG_LEVEL:INFO}
