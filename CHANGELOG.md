@@ -9,12 +9,25 @@ All notable changes to this project are documented in this file.
 - Flyway-managed schema migrations for the bundled PostgreSQL rule-management server.
 - Standard Spring Boot Actuator health contribution for the in-memory `RuleEngine`.
 - PostgreSQL 15 service-backed CI integration test covering Flyway migration, Hibernate schema validation and application startup.
+- Optional `RuleEngineListener` runtime events in `spring-rule-core` for observability integrations without coupling the core to a metrics library.
+- Optional Micrometer rule-operation timers and fired-rule distribution metrics when a `MeterRegistry` is available.
+- Optional stateless API-key authentication for the bundled management server with separate `READER` and `ADMIN` authorization levels.
+- Integration coverage for API-key authorization and protected Actuator metrics.
 
 ### Changed
 
 - Bundled admin server defaults Hibernate to `ddl-auto=validate` instead of mutating schemas with `ddl-auto=update`.
 - Removed the legacy unversioned `project-boot/src/main/resources/schema.sql` initialization path.
 - Actuator exposes only `health,info` by default and optional Redis health probing is disabled unless explicitly enabled.
+- Non-health Actuator endpoints require the `ADMIN` API key when bundled security is enabled.
+- The Vue client can supply the API key from session storage and prompts only after an authentication challenge.
+- Rule metric tags intentionally exclude rule names to avoid high-cardinality time series.
+
+### Security
+
+- `RULE_SECURITY_ENABLED=true` now requires an admin API key of at least 16 characters; startup fails closed when the security configuration is incomplete.
+- Read-only keys can call `GET /api/rules/**` but cannot mutate, refresh or execute rules.
+- Management API keys are compared using fixed-length SHA-256 digests with constant-time comparison.
 
 ## [0.2.0] - 2026-08-12
 
