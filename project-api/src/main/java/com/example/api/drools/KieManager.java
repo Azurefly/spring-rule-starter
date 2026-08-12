@@ -1,164 +1,148 @@
 package com.example.api.drools;
 
-import org.kie.api.KieServices;
-import org.kie.api.builder.KieFileSystem;
-import org.kie.api.builder.KieBuilder;
-import org.kie.api.builder.Message;
-import org.kie.api.builder.ReleaseId;
-import org.kie.api.runtime.KieContainer;
-import org.kie.api.runtime.KieSession;
-import org.kie.api.io.Resource;
-import org.kie.api.io.ResourceType;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
 import com.example.api.entity.RuleMeta;
 import com.example.api.repository.RuleRepository;
-import com.example.api.drools.BuildResult;
+import org.kie.api.KieServices;
+import org.kie.api.builder.KieBuilder;
+import org.kie.api.builder.KieFileSystem;
+import org.kie.api.builder.Message;
+import org.kie.api.builder.ReleaseId;
+import org.kie.api.io.Resource;
+import org.kie.api.io.ResourceType;
+import org.kie.api.runtime.KieContainer;
+import org.kie.api.runtime.KieSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.Map;
+import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * KieManager: builds KieContainer from DRL text and caches containers by rule name.
- * Supports rebuilding (hot-reload) by creating a new ReleaseId for each build.
- * Compatible with Drools 7.x and Java 8.
+ * Builds Drools containers from DRL text and keeps one active container per rule name.
+ * A failed build never replaces the last successfully built container.
  */
 @Component
 public class KieManager {
     private static final Logger logger = LoggerFactory.getLogger(KieManager.class);
-    private final KieServices ks = KieServices.Factory.get();
+
+    private final KieServices kieServices = KieServices.Factory.get();
     private final Map<String, KieContainer> cache = new ConcurrentHashMap<>();
-    
+    private final AtomicLong buildSequence = new AtomicLong();
+
     @Autowired(required = false)
     private RuleRepository ruleRepository;
-    
-    // 添加一个方法来手动设置RuleRepository（用于测试）
+
     public void setRuleRepository(RuleRepository ruleRepository) {
         this.ruleRepository = ruleRepository;
     }
 
-    /**
-     * Build or update a KieContainer for a rule (identified by name).
-     * Returns BuildResult indicating success/failure and message.
-     */
     public BuildResult buildOrUpdateReport(String name, String drl) {
-        try {
-            logger.info("=== Building rule: {} ===", name);
-            logger.info("DRL content length: {}", (drl != null ? drl.length() : "null"));
-            
-            if (name == null || name.trim().isEmpty()) {
-                logger.error("Rule name is null or empty");
-                return new BuildResult(BuildResult.Status.FAILURE, "Rule name cannot be null or empty");
-            }
-            if (drl == null || drl.trim().isEmpty()) {
-                logger.error("DRL content is null or empty");
-                return new BuildResult(BuildResult.Status.FAILURE, "DRL content cannot be null or empty");
-            }
-            
-            logger.debug("Creating release ID...");
-            String version = String.valueOf(System.currentTimeMillis());
-            ReleaseId releaseId = ks.newReleaseId("com.example.rules", name, version);
-            logger.debug("Release ID: {}", releaseId);
-            
-            logger.debug("Creating KieFileSystem...");
-            KieFileSystem kfs = ks.newKieFileSystem();
-            kfs.generateAndWritePomXML(releaseId);
-            
-            logger.debug("Adding DRL resource...");
-            String path = "src/main/resources/rules/" + name + ".drl";
-            Resource r = ks.getResources().newByteArrayResource(drl.getBytes(StandardCharsets.UTF_8))
-                    .setResourceType(ResourceType.DRL)
-                    .setTargetPath(path);
-            kfs.write(r);
-            logger.debug("DRL resource written to path: {}", path);
-            
-            logger.debug("Building KieBuilder...");
-            KieBuilder kb = ks.newKieBuilder(kfs);
-            kb.buildAll();
-            logger.debug("Build completed");
-            
-            if (kb.getResults().hasMessages(Message.Level.ERROR)) {
-                StringBuilder sb = new StringBuilder();
-                for (Message m : kb.getResults().getMessages(Message.Level.ERROR)) {
-                    if (m != null && m.getText() != null) {
-                        sb.append(m.getText()).append("\n");
-                    }
-                }
-                String errorMessage = sb.toString().trim();
-                if (errorMessage.isEmpty()) {
-                    errorMessage = "Build failed with unspecified errors";
-                }
-                logger.error("Drools build errors for {}: {}", name, errorMessage);
-                return new BuildResult(BuildResult.Status.FAILURE, errorMessage);
-            }
-            if (kb.getResults().hasMessages(Message.Level.WARNING)) {
-                StringBuilder sb = new StringBuilder();
-                for (Message m : kb.getResults().getMessages(Message.Level.WARNING)) {
-                    sb.append(m.getText()).append("\n");
-                }
-                logger.warn("Drools build warnings for {}: {}", name, sb.toString());
-            }
-            
-            logger.debug("Creating KieContainer...");
-            KieContainer kc = ks.newKieContainer(releaseId);
-            cache.put(name, kc);
-            logger.info("Successfully built rule: {}", name);
-            return new BuildResult(BuildResult.Status.SUCCESS, "built");
-        } catch (Exception e) {
-            logger.error("Exception building rule {}: {}", name, e.getMessage(), e);
-            
-            String errorMessage = "Exception: " + e.getClass().getSimpleName() + " - " + e.getMessage();
-            if (e.getCause() != null) {
-                errorMessage += " (Caused by: " + e.getCause().getClass().getSimpleName() + " - " + e.getCause().getMessage() + ")";
-            }
-            
-            return new BuildResult(BuildResult.Status.FAILURE, errorMessage);
-        }
+        return compile(name, drl, true);
     }
 
     /**
-     * Legacy method that throws on failure.
+     * Compile a rule without changing the active cache. Useful for editor validation.
      */
-    public void buildOrUpdate(String name, String drl) {
+    public BuildResult validateReport(String name, String drl) {
+        return compile(name, drl, false);
+    }
+
+    private BuildResult compile(String name, String drl, boolean install) {
         if (name == null || name.trim().isEmpty()) {
-            throw new RuntimeException("Rule name cannot be null or empty");
+            return failure("Rule name cannot be null or empty");
         }
         if (drl == null || drl.trim().isEmpty()) {
-            throw new RuntimeException("DRL content cannot be null or empty");
+            return failure("DRL content cannot be null or empty");
         }
-        BuildResult res = buildOrUpdateReport(name, drl);
-        if (res.getStatus() != BuildResult.Status.SUCCESS) {
-            throw new RuntimeException("Failed to build rule: " + res.getMessage());
+
+        String artifactId = sanitizeArtifactId(name);
+        String version = "1.0." + System.currentTimeMillis() + "-" + buildSequence.incrementAndGet();
+        ReleaseId releaseId = kieServices.newReleaseId("com.azurefly.rules", artifactId, version);
+        KieContainer candidate = null;
+
+        try {
+            KieFileSystem fileSystem = kieServices.newKieFileSystem();
+            fileSystem.generateAndWritePomXML(releaseId);
+
+            String path = "src/main/resources/rules/" + artifactId + ".drl";
+            Resource resource = kieServices.getResources()
+                    .newByteArrayResource(drl.getBytes(StandardCharsets.UTF_8))
+                    .setResourceType(ResourceType.DRL)
+                    .setTargetPath(path);
+            fileSystem.write(resource);
+
+            KieBuilder builder = kieServices.newKieBuilder(fileSystem);
+            builder.buildAll();
+
+            if (builder.getResults().hasMessages(Message.Level.ERROR)) {
+                return failure(joinMessages(builder.getResults().getMessages(Message.Level.ERROR)));
+            }
+
+            String warnings = builder.getResults().hasMessages(Message.Level.WARNING)
+                    ? joinMessages(builder.getResults().getMessages(Message.Level.WARNING))
+                    : null;
+
+            candidate = kieServices.newKieContainer(releaseId);
+            if (install) {
+                KieContainer previous = cache.put(name, candidate);
+                candidate = null; // ownership moved to cache
+                disposeQuietly(previous);
+                logger.info("Rule [{}] compiled and activated", name);
+            }
+
+            String message = warnings == null || warnings.trim().isEmpty()
+                    ? (install ? "built and activated" : "validation passed")
+                    : (install ? "built and activated with warnings: " : "validation passed with warnings: ") + warnings;
+            return new BuildResult(BuildResult.Status.SUCCESS, message);
+        } catch (Exception ex) {
+            logger.error("Failed to compile rule [{}]", name, ex);
+            return failure(exceptionMessage(ex));
+        } finally {
+            disposeQuietly(candidate);
         }
     }
 
-    /**
-     * Fire rules for the named container. If not present in cache, RuntimeException.
-     * Uses a fresh KieSession (stateful) for each invocation.
-     */
+    public void buildOrUpdate(String name, String drl) {
+        BuildResult result = buildOrUpdateReport(name, drl);
+        if (result.getStatus() != BuildResult.Status.SUCCESS) {
+            throw new IllegalArgumentException("Failed to build rule: " + result.getMessage());
+        }
+    }
+
     public void fireRules(String name, Object fact) {
+        fireRulesAndCount(name, fact);
+    }
+
+    public int fireRulesAndCount(String name, Object fact) {
         if (name == null || name.trim().isEmpty()) {
-            throw new RuntimeException("Rule name cannot be null or empty");
+            throw new IllegalArgumentException("Rule name cannot be null or empty");
         }
         if (fact == null) {
-            throw new RuntimeException("Fact cannot be null");
+            throw new IllegalArgumentException("Fact cannot be null");
         }
-        KieContainer kc = cache.get(name);
-        if (kc == null) {
-            throw new RuntimeException("KieContainer not found for: " + name + ". Call buildOrUpdate first.");
+
+        KieContainer container = cache.get(name);
+        if (container == null) {
+            throw new IllegalStateException("KieContainer not found for: " + name + ". Build or reload the rule first.");
         }
+
         KieSession session = null;
         try {
-            session = kc.newKieSession();
+            session = container.newKieSession();
             session.insert(fact);
-            session.fireAllRules();
+            return session.fireAllRules();
         } catch (Exception ex) {
-            throw new RuntimeException("Failed to fire rules: " + ex.getMessage(), ex);
+            throw new IllegalStateException("Failed to fire rule [" + name + "]: " + ex.getMessage(), ex);
         } finally {
             if (session != null) {
                 session.dispose();
@@ -166,130 +150,152 @@ public class KieManager {
         }
     }
 
-    /**
-     * Check if a container exists
-     */
     public boolean hasContainer(String name) {
-        if (name == null || name.trim().isEmpty()) {
-            return false;
-        }
-        return cache.containsKey(name);
+        return name != null && cache.containsKey(name);
     }
-    
-    /**
-     * Load rule from database by name and build container
-     */
+
+    public Set<String> getLoadedRuleNames() {
+        return Collections.unmodifiableSet(new HashSet<>(cache.keySet()));
+    }
+
+    public void removeContainer(String name) {
+        if (name == null) {
+            return;
+        }
+        disposeQuietly(cache.remove(name));
+    }
+
+    public void clearContainers() {
+        for (KieContainer container : cache.values()) {
+            disposeQuietly(container);
+        }
+        cache.clear();
+    }
+
     public BuildResult loadRuleFromDatabase(String name) {
         if (ruleRepository == null) {
-            return new BuildResult(BuildResult.Status.FAILURE, "RuleRepository not available");
+            return failure("RuleRepository not available");
         }
-        
-        Optional<RuleMeta> ruleOpt = ruleRepository.findByName(name);
-        if (!ruleOpt.isPresent()) {
-            return new BuildResult(BuildResult.Status.FAILURE, "Rule not found in database: " + name);
+
+        Optional<RuleMeta> ruleOptional = ruleRepository.findByName(name);
+        if (!ruleOptional.isPresent()) {
+            removeContainer(name);
+            return failure("Rule not found in database: " + name);
         }
-        
-        RuleMeta rule = ruleOpt.get();
+
+        RuleMeta rule = ruleOptional.get();
+        if (!"ENABLED".equalsIgnoreCase(rule.getStatus())) {
+            removeContainer(name);
+            return failure("Rule is disabled: " + name);
+        }
         if (!"DROOLS".equalsIgnoreCase(rule.getType())) {
-            return new BuildResult(BuildResult.Status.FAILURE, "Unsupported rule type: " + rule.getType());
+            removeContainer(name);
+            return failure("Unsupported rule type: " + rule.getType());
         }
-        
-        if (rule.getContent() == null || rule.getContent().trim().isEmpty()) {
-            return new BuildResult(BuildResult.Status.FAILURE, "Rule content is empty");
-        }
-        
         return buildOrUpdateReport(name, rule.getContent());
     }
-    
+
     /**
-     * Load all enabled DROOLS rules from database
+     * Rebuild the in-memory state from the database so disabled/deleted rules cannot remain active.
      */
     public void loadAllRulesFromDatabase() {
         if (ruleRepository == null) {
-            logger.warn("RuleRepository not available, skipping rule loading");
+            logger.warn("RuleRepository not available; database rule loading is skipped");
             return;
         }
-        
-        try {
-            List<RuleMeta> rules = ruleRepository.findAll();
-            int loaded = 0;
-            int failed = 0;
-            
-            for (RuleMeta rule : rules) {
-                if ("ENABLED".equals(rule.getStatus()) && "DROOLS".equalsIgnoreCase(rule.getType())) {
-                    BuildResult result = loadRuleFromDatabase(rule.getName());
-                    if (result.getStatus() == BuildResult.Status.SUCCESS) {
-                        loaded++;
-                        logger.info("Successfully loaded rule: {}", rule.getName());
-                    } else {
-                        failed++;
-                        logger.error("Failed to load rule {}: {}", rule.getName(), result.getMessage());
-                    }
+
+        clearContainers();
+        List<RuleMeta> rules = ruleRepository.findAll();
+        int loaded = 0;
+        int failed = 0;
+        for (RuleMeta rule : rules) {
+            if ("ENABLED".equalsIgnoreCase(rule.getStatus()) && "DROOLS".equalsIgnoreCase(rule.getType())) {
+                BuildResult result = buildOrUpdateReport(rule.getName(), rule.getContent());
+                if (result.getStatus() == BuildResult.Status.SUCCESS) {
+                    loaded++;
+                } else {
+                    failed++;
+                    logger.error("Failed to load rule [{}]: {}", rule.getName(), result.getMessage());
                 }
             }
-            
-            logger.info("Rule loading completed. Loaded: {}, Failed: {}", loaded, failed);
-        } catch (Exception e) {
-            logger.error("Error loading rules from database: {}", e.getMessage(), e);
         }
+        logger.info("Database rule loading completed: loaded={}, failed={}", loaded, failed);
     }
-    
-    /**
-     * Reload a specific rule from database
-     */
+
     public BuildResult reloadRuleFromDatabase(String name) {
-        System.out.println("=== KieManager.reloadRuleFromDatabase called for: " + name + " ===");
-        logger.error("=== KieManager.reloadRuleFromDatabase called for: {} ===", name);
-        logger.info("=== Reloading rule from database: {} ===", name);
-        
-        try {
-            // Remove from cache first
-            cache.remove(name);
-            
-            BuildResult result = loadRuleFromDatabase(name);
-            System.out.println("LoadRuleFromDatabase result: " + result.getStatus() + " - " + result.getMessage());
-            
-            // Update the database with build status
-            if (ruleRepository != null) {
-                try {
-                    Optional<RuleMeta> ruleOpt = ruleRepository.findByName(name);
-                    if (ruleOpt.isPresent()) {
-                        RuleMeta rule = ruleOpt.get();
-                        rule.setLastBuildAt(java.time.LocalDateTime.now());
-                        rule.setLastBuildStatus(result.getStatus().name());
-                        rule.setLastBuildMessage(result.getMessage());
-                        ruleRepository.save(rule);
-                        logger.info("Updated rule {} build status to: {}", name, result.getStatus());
-                        System.out.println("Database updated successfully for rule: " + name);
-                    } else {
-                        System.out.println("Rule not found in database: " + name);
-                    }
-                } catch (Exception e) {
-                    logger.error("Failed to update rule build status in database: {}", e.getMessage(), e);
-                    System.out.println("Database update failed: " + e.getMessage());
-                    e.printStackTrace();
-                }
-            } else {
-                System.out.println("RuleRepository is null!");
-            }
-            
-            return result;
-        } catch (Exception e) {
-            System.out.println("Exception in reloadRuleFromDatabase: " + e.getMessage());
-            e.printStackTrace();
-            return new BuildResult(BuildResult.Status.FAILURE, "Exception: " + e.getMessage());
+        if (ruleRepository == null) {
+            return failure("RuleRepository not available");
         }
+
+        Optional<RuleMeta> ruleOptional = ruleRepository.findByName(name);
+        if (!ruleOptional.isPresent()) {
+            removeContainer(name);
+            return failure("Rule not found in database: " + name);
+        }
+
+        RuleMeta rule = ruleOptional.get();
+        if (!"ENABLED".equalsIgnoreCase(rule.getStatus())) {
+            removeContainer(name);
+            return new BuildResult(BuildResult.Status.SUCCESS, "rule disabled; active container removed");
+        }
+
+        BuildResult result = buildOrUpdateReport(rule.getName(), rule.getContent());
+        rule.setLastBuildAt(LocalDateTime.now());
+        rule.setLastBuildStatus(result.getStatus().name());
+        rule.setLastBuildMessage(result.getMessage());
+        ruleRepository.save(rule);
+        return result;
     }
-    
-    /**
-     * Get rule content from database
-     */
+
     public String getRuleContentFromDatabase(String name) {
         if (ruleRepository == null) {
             return null;
         }
-        
-        Optional<RuleMeta> ruleOpt = ruleRepository.findByName(name);
-        return ruleOpt.map(RuleMeta::getContent).orElse(null);
+        return ruleRepository.findByName(name).map(RuleMeta::getContent).orElse(null);
+    }
+
+    private String sanitizeArtifactId(String name) {
+        String sanitized = name.trim().replaceAll("[^A-Za-z0-9_.-]", "-");
+        return sanitized.isEmpty() ? "rule" : sanitized;
+    }
+
+    private String joinMessages(List<Message> messages) {
+        StringBuilder builder = new StringBuilder();
+        for (Message message : messages) {
+            if (message == null || message.getText() == null) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append("\n");
+            }
+            builder.append(message.getText());
+        }
+        return builder.length() == 0 ? "Drools build failed with no diagnostic message" : builder.toString();
+    }
+
+    private BuildResult failure(String message) {
+        return new BuildResult(BuildResult.Status.FAILURE, message);
+    }
+
+    private String exceptionMessage(Exception ex) {
+        String message = ex.getMessage();
+        if (message == null || message.trim().isEmpty()) {
+            message = ex.getClass().getSimpleName();
+        }
+        if (ex.getCause() != null && ex.getCause().getMessage() != null) {
+            message += " (caused by: " + ex.getCause().getMessage() + ")";
+        }
+        return message;
+    }
+
+    private void disposeQuietly(KieContainer container) {
+        if (container == null) {
+            return;
+        }
+        try {
+            container.dispose();
+        } catch (Exception ex) {
+            logger.debug("Failed to dispose KieContainer cleanly", ex);
+        }
     }
 }

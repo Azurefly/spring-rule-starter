@@ -1,51 +1,44 @@
--- 规则元数据表
+-- Canonical PostgreSQL schema for Spring Rule Starter.
 CREATE TABLE IF NOT EXISTS rule_meta (
     id BIGSERIAL PRIMARY KEY,
-    name VARCHAR(255) NOT NULL UNIQUE,
-    type VARCHAR(50) NOT NULL DEFAULT 'DROOLS',
-    content TEXT,
+    name VARCHAR(120) NOT NULL UNIQUE,
+    type VARCHAR(32) NOT NULL DEFAULT 'DROOLS',
+    content TEXT NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'ENABLED',
-    version INTEGER DEFAULT 1,
+    version INTEGER NOT NULL DEFAULT 1,
     last_build_at TIMESTAMP,
     last_build_status VARCHAR(20),
     last_build_message TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_by VARCHAR(100),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- 规则构建历史表
 CREATE TABLE IF NOT EXISTS rule_build_history (
     id BIGSERIAL PRIMARY KEY,
-    rule_name VARCHAR(255) NOT NULL,
+    rule_name VARCHAR(120) NOT NULL,
     version INTEGER NOT NULL,
     status VARCHAR(20) NOT NULL,
     message TEXT,
     content TEXT,
     built_by VARCHAR(100),
-    built_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (rule_name) REFERENCES rule_meta(name) ON DELETE CASCADE
+    built_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_rule_history_rule
+        FOREIGN KEY (rule_name) REFERENCES rule_meta(name) ON DELETE CASCADE
 );
 
--- 创建索引
-CREATE INDEX IF NOT EXISTS idx_rule_meta_name ON rule_meta(name);
 CREATE INDEX IF NOT EXISTS idx_rule_meta_status ON rule_meta(status);
+CREATE INDEX IF NOT EXISTS idx_rule_meta_updated_at ON rule_meta(updated_at);
 CREATE INDEX IF NOT EXISTS idx_rule_build_history_rule_name ON rule_build_history(rule_name);
 CREATE INDEX IF NOT EXISTS idx_rule_build_history_built_at ON rule_build_history(built_at);
 
--- 插入示例规则
-INSERT INTO rule_meta (name, type, content, status, version) VALUES 
-('discount-rule', 'DROOLS', 
-'package com.example.rules;
-
-import com.example.ruleengine.Order;
-
-rule "Discount Rule"
-    when
-        $order : Order(amount > 100)
-    then
-        $order.setDiscount(10.0);
-        $order.setFreeShipping(true);
-        System.out.println("Applied discount: " + $order.getDiscount());
-end', 
-'ENABLED', 1)
+-- Optional example rule. Safe to execute repeatedly.
+INSERT INTO rule_meta (name, type, content, status, version)
+VALUES (
+    'discount-rule',
+    'DROOLS',
+    'package com.example.rules;\n\nimport com.example.ruleengine.Order;\n\nrule "Discount Rule"\nwhen\n    $order : Order(amount > 100)\nthen\n    $order.setDiscount(10.0);\n    $order.setFreeShipping(true);\nend',
+    'ENABLED',
+    1
+)
 ON CONFLICT (name) DO NOTHING;
