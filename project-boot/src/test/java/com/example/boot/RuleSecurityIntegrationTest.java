@@ -4,10 +4,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {
@@ -65,5 +67,19 @@ class RuleSecurityIntegrationTest {
 
         mockMvc.perform(get("/actuator/metrics").header(HEADER, ADMIN_KEY))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void ruleRuntimeMetricsAreRecordedAndProtected() throws Exception {
+        mockMvc.perform(post("/api/rules/validate")
+                        .header(HEADER, ADMIN_KEY)
+                        .param("name", "metrics-probe")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("package rules; rule \"metrics probe\" when then end"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/actuator/metrics/spring.rule.operation").header(HEADER, ADMIN_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("spring.rule.operation"));
     }
 }
