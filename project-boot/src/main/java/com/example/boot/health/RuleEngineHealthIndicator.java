@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 /**
  * Standard Actuator health contribution for the in-memory rule runtime.
  */
-@Component("ruleEngine")
+@Component
 public class RuleEngineHealthIndicator implements HealthIndicator {
     private final RuleEngine ruleEngine;
 
