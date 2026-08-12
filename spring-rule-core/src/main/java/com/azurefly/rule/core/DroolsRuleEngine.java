@@ -18,6 +18,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -31,6 +32,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 public class DroolsRuleEngine implements RuleEngine {
     private static final Logger logger = LoggerFactory.getLogger(DroolsRuleEngine.class);
+    private static final String WARNING_PREFIX = "compiled and activated with warnings: ";
 
     public static final String DEFAULT_RELEASE_GROUP_ID = "com.azurefly.rules";
     public static final String DEFAULT_VERSION_PREFIX = "1.0";
@@ -57,8 +59,12 @@ public class DroolsRuleEngine implements RuleEngine {
         if (!candidate.result.isSuccess()) {
             return candidate.result;
         }
+        String buildMessage = candidate.result.getMessage();
         disposeQuietly(candidate.container);
-        return RuleBuildResult.success(candidate.result.getMessage().replace("compiled", "validation passed"));
+        if (buildMessage != null && buildMessage.startsWith(WARNING_PREFIX)) {
+            return RuleBuildResult.success("validation passed with warnings: " + buildMessage.substring(WARNING_PREFIX.length()));
+        }
+        return RuleBuildResult.success("validation passed");
     }
 
     @Override
@@ -178,7 +184,9 @@ public class DroolsRuleEngine implements RuleEngine {
         }
 
         String artifactId = sanitizeArtifactId(normalizedName);
-        String version = versionPrefix + "." + System.currentTimeMillis() + "-" + buildSequence.incrementAndGet();
+        String version = versionPrefix + "." + System.currentTimeMillis()
+                + "-" + buildSequence.incrementAndGet()
+                + "-" + UUID.randomUUID().toString().substring(0, 8);
         ReleaseId releaseId = kieServices.newReleaseId(releaseGroupId, artifactId, version);
 
         try {
@@ -205,7 +213,7 @@ public class DroolsRuleEngine implements RuleEngine {
             KieContainer container = kieServices.newKieContainer(releaseId);
             String message = warnings == null || warnings.trim().isEmpty()
                     ? "compiled and activated"
-                    : "compiled and activated with warnings: " + warnings;
+                    : WARNING_PREFIX + warnings;
             return CompiledRule.success(container, message);
         } catch (Exception ex) {
             removeModuleQuietly(releaseId);
