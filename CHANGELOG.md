@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.0] - 2026-08-12
+
+### Added
+
+- `spring-rule-core`: Spring-independent public `RuleEngine` API and dynamic Drools implementation.
+- `spring-rule-spring-boot-autoconfigure`: `spring.rule.*` configuration and conditional `RuleEngine` registration.
+- `spring-rule-spring-boot-starter`: one-dependency integration artifact for Spring Boot applications.
+- Batch fact execution with optional KIE globals through the public runtime API.
+- Auto-configuration regression tests for default registration, disablement and user-bean backoff.
+- Core runtime regression tests independent of the bundled management application's `Order` example.
+
+### Changed
+
+- Bundled admin `KieManager` now delegates dynamic compilation, execution and container lifecycle to `spring-rule-core` instead of maintaining a second Drools implementation.
+- Runtime install/remove/execute lifecycle uses a read/write lock so a container cannot be disposed while an execution is actively using it.
+- Maven reactor version moves to `0.2.0`.
+- README now documents direct starter consumption as the primary reusable integration path.
+
+### Compatibility
+
+- Java source/target remains 8.
+- Spring Boot baseline remains 2.7.13.
+- Drools baseline remains 7.59.0.Final.
+- Existing admin REST APIs and `com.example...` compatibility packages remain available.
+
 ## [0.1.0] - 2026-08-12
 
 ### Added
@@ -22,7 +47,7 @@ All notable changes to this project are documented in this file.
 - Reload-all now reconciles the complete in-memory cache so disabled/deleted rules cannot stay active.
 - Redis subscribers no longer create duplicate shared build-history rows on every cluster node.
 - Runtime logging and CORS settings are configurable and debug-only console output has been removed.
-- Maven coordinates move to `com.azurefly:spring-rule-starter:0.1.0` while Java package names remain unchanged for source compatibility.
+- Maven coordinates moved to `com.azurefly:*:0.1.0` while Java package names remained unchanged for source compatibility.
 
 ### Security
 

@@ -8,15 +8,11 @@
     <version>0.2.0</version>
   </parent>
 
-  <artifactId>project-ruleengine</artifactId>
+  <artifactId>spring-rule-core</artifactId>
+  <name>Spring Rule Core</name>
+  <description>Spring-independent dynamic Drools runtime used by the starter and admin application.</description>
 
   <dependencies>
-    <dependency>
-      <groupId>com.azurefly</groupId>
-      <artifactId>project-common</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-
     <dependency>
       <groupId>org.kie</groupId>
       <artifactId>kie-api</artifactId>
@@ -34,13 +30,17 @@
     </dependency>
     <dependency>
       <groupId>org.drools</groupId>
-      <artifactId>drools-decisiontables</artifactId>
+      <artifactId>drools-mvel</artifactId>
       <version>${drools.version}</version>
     </dependency>
-
     <dependency>
-      <groupId>org.springframework</groupId>
-      <artifactId>spring-context</artifactId>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>
