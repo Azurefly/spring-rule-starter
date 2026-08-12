@@ -1,58 +1,178 @@
 # Spring Rule Starter
 
-A small Spring Boot + Drools rule-management baseline for applications that need rules stored in a database, hot compilation, version history, rollback, and optional multi-node refresh.
+Spring Rule Starter provides two things in one repository:
 
-> **Security boundary:** DRL can call Java code and must be treated as trusted executable code. The management API is not an untrusted-user sandbox. See [SECURITY.md](SECURITY.md) before exposing it outside a trusted network.
+1. a **reusable Spring Boot Starter** for dynamically compiling and executing Drools DRL at runtime; and
+2. a **reference rule-management application** with PostgreSQL persistence, version history, rollback, optional Redis refresh, REST APIs and a Vue management console.
 
-## What v0.1 provides
+> **Security boundary:** DRL can call Java code and must be treated as trusted executable code. This project is not a sandbox for untrusted rule authors. See [SECURITY.md](SECURITY.md).
 
-- Dynamic Drools DRL compilation without restarting the application.
-- Last-known-good in-memory container: a failed edit does not replace the active compiled rule.
-- PostgreSQL-backed rule metadata and build history.
-- Versioned updates and rollback from successful snapshots.
-- Enable / disable / delete lifecycle operations.
-- Editor-only validation that does not activate the candidate rule.
-- Legacy `Order` demo execution plus generic `Map<String,Object>` fact execution.
-- Startup reload of enabled rules.
-- Optional Redis pub/sub for cache refresh across multiple application nodes.
-- Vue 3 management console for editing, validating, executing and rolling back rules.
-- CI that runs backend tests, checks JDK 17 compilation compatibility, and builds the frontend.
+## v0.2 highlights
+
+- New Spring-independent `spring-rule-core` runtime API.
+- New `spring-rule-spring-boot-autoconfigure` module.
+- New one-dependency `spring-rule-spring-boot-starter` module.
+- The bundled admin application now delegates to the same public `RuleEngine` implementation used by starter consumers.
+- Failed rule replacement preserves the last-known-good container.
+- Rule execution and hot replacement are protected by a read/write lifecycle lock so an active container is not disposed while a request is using it.
+- Starter auto-configuration backs off when an application supplies its own `RuleEngine`.
+- Existing v0.1 rule persistence, history, rollback, lifecycle, Redis refresh and Vue management features remain available.
 
 ## Project structure
 
 ```text
 spring-rule-starter/
-├─ project-common       Result wrapper and common web handling
-├─ project-ruleengine   Drools dependencies and simple rule-engine examples
-├─ project-api          Rule persistence, compilation lifecycle, REST API
-├─ project-boot         Runnable Spring Boot application and runtime config
-├─ frontend             Vue 3 rule-management console
-├─ schema.sql           Canonical PostgreSQL schema
-└─ docker-compose.yml   Local PostgreSQL + Redis services
+├─ spring-rule-core
+│  └─ Spring-independent public RuleEngine API + Drools implementation
+├─ spring-rule-spring-boot-autoconfigure
+│  └─ spring.rule.* properties and RuleEngine auto-configuration
+├─ spring-rule-spring-boot-starter
+│  └─ Dependency starter consumed by business applications
+├─ project-common
+│  └─ Common response/web support used by the bundled admin application
+├─ project-ruleengine
+│  └─ Legacy examples / Order demo kept for compatibility
+├─ project-api
+│  └─ Persistence, rule lifecycle, version history and admin REST API
+├─ project-boot
+│  └─ Runnable reference management server
+├─ frontend
+│  └─ Vue 3 rule-management console
+├─ schema.sql
+└─ docker-compose.yml
 ```
 
-The current `0.1.0` release is a **runnable reference application and modular baseline**. A zero-boilerplate Spring Boot auto-configuration artifact suitable for publishing to Maven Central is a logical next step, but is intentionally not pretended to exist yet.
+The architectural boundary in v0.2 is intentional:
+
+```text
+Business application
+      │
+      ▼
+spring-rule-spring-boot-starter
+      │
+      ▼
+spring-rule-spring-boot-autoconfigure
+      │
+      ▼
+spring-rule-core  ◄──────── project-api / KieManager
+      │
+      ▼
+Drools / KIE
+```
+
+The admin application no longer owns a second dynamic Drools compiler. `KieManager` is now an adapter for database loading and build-status semantics around the public `RuleEngine`.
 
 ## Runtime baseline
 
 - Java source/target: 8
 - Spring Boot: 2.7.13
 - Drools: 7.59.0.Final
-- PostgreSQL: example uses 15
-- Redis: optional, example uses 7
+- PostgreSQL: local example uses 15
+- Redis: optional, local example uses 7
 - Frontend: Vue 3 + Vite
 
-## Quick start
+## Use it as a Spring Boot Starter
+
+The artifacts are currently built from this GitHub repository; Maven Central publication is not claimed yet. For local development, first install the repository:
+
+```bash
+mvn clean install
+```
+
+Then add one dependency to another Spring Boot 2.7 application:
+
+```xml
+<dependency>
+  <groupId>com.azurefly</groupId>
+  <artifactId>spring-rule-spring-boot-starter</artifactId>
+  <version>0.2.0</version>
+</dependency>
+```
+
+A `RuleEngine` bean is created automatically:
+
+```java
+import com.azurefly.rule.core.RuleBuildResult;
+import com.azurefly.rule.core.RuleEngine;
+import org.springframework.stereotype.Service;
+
+@Service
+public class PricingRuleService {
+    private final RuleEngine ruleEngine;
+
+    public PricingRuleService(RuleEngine ruleEngine) {
+        this.ruleEngine = ruleEngine;
+    }
+
+    public void load(String name, String drl) {
+        RuleBuildResult result = ruleEngine.install(name, drl);
+        if (!result.isSuccess()) {
+            throw new IllegalArgumentException(result.getMessage());
+        }
+    }
+
+    public int execute(String name, Object fact) {
+        return ruleEngine.execute(name, fact);
+    }
+}
+```
+
+### Public `RuleEngine` API
+
+```java
+RuleBuildResult validate(String ruleName, String drl);
+RuleBuildResult install(String ruleName, String drl);
+int execute(String ruleName, Object fact);
+int execute(String ruleName, Iterable<?> facts, Map<String,Object> globals);
+boolean contains(String ruleName);
+Set<String> getLoadedRuleNames();
+void remove(String ruleName);
+void clear();
+```
+
+`validate` compiles without activation. `install` compiles first and only swaps the active container after a successful build. If the candidate is invalid, the existing active rule remains available.
+
+### Starter configuration
+
+```yaml
+spring:
+  rule:
+    enabled: true
+    release-group-id: com.mycompany.rules
+    version-prefix: 1.0
+```
+
+| Property | Default | Description |
+|---|---|---|
+| `spring.rule.enabled` | `true` | Enable `RuleEngine` auto-configuration |
+| `spring.rule.release-group-id` | `com.azurefly.rules` | GroupId used for generated in-memory KIE modules |
+| `spring.rule.version-prefix` | `1.0` | Prefix used for generated dynamic module versions |
+
+Set `spring.rule.enabled=false` to disable the starter. If the application declares its own `RuleEngine` bean, the built-in auto-configuration backs off automatically.
+
+### Batch facts and globals
+
+The public runtime is not limited to the bundled `Order` example:
+
+```java
+int fired = ruleEngine.execute(
+    "pricing",
+    facts,
+    Collections.<String,Object>singletonMap("clock", clock)
+);
+```
+
+Every invocation uses a fresh `KieSession` and disposes it after execution.
+
+## Run the bundled management application
 
 ### 1. Start PostgreSQL
-
-The default application configuration matches `docker-compose.yml`:
 
 ```bash
 docker compose up -d db
 ```
 
-Redis is optional. Start it only when cluster refresh is needed:
+Redis is optional:
 
 ```bash
 docker compose up -d redis
@@ -64,15 +184,15 @@ docker compose up -d redis
 mvn clean verify
 ```
 
-### 3. Start the backend
+### 3. Start backend
 
 ```bash
 mvn -pl project-boot -am spring-boot:run
 ```
 
-The backend listens on `http://localhost:8080` by default.
+Backend default: `http://localhost:8080`.
 
-### 4. Start the frontend
+### 4. Start frontend
 
 ```bash
 cd frontend
@@ -80,169 +200,106 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:5173`. Vite proxies `/api` to the backend.
+Frontend default: `http://localhost:5173`.
 
-## Configuration
+## Management application configuration
 
-Copy `.env.example` into the configuration mechanism used by your environment. The application reads environment variables directly; it does not require a `.env` parser.
+The reference server reads environment variables directly; `.env` parsing is not required.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `DB_URL` | `jdbc:postgresql://localhost:5432/ruledb` | PostgreSQL JDBC URL |
 | `DB_USERNAME` | `ruleuser` | Database user |
-| `DB_PASSWORD` | `rulepass` | Database password for local compose only |
+| `DB_PASSWORD` | `rulepass` | Local compose password |
 | `SERVER_PORT` | `8080` | Backend HTTP port |
 | `RULE_REDIS_ENABLED` | `false` | Enable Redis rule-refresh pub/sub |
 | `REDIS_HOST` | `localhost` | Redis host |
 | `REDIS_PORT` | `6379` | Redis port |
-| `RULE_CORS_ALLOWED_ORIGIN_PATTERNS` | `http://localhost:5173` | Comma-separated allowed frontend origins |
-| `RULE_MAX_FILE_SIZE` | `1MB` | Maximum uploaded DRL file size |
+| `RULE_CORS_ALLOWED_ORIGIN_PATTERNS` | `http://localhost:5173` | Allowed frontend origins |
+| `RULE_MAX_FILE_SIZE` | `1MB` | Maximum uploaded DRL size |
 
-Do not commit production credentials. If a real credential has ever been committed to Git history, removing it from the current file is not sufficient: rotate the credential as well.
+Do not commit production credentials. If a real credential was previously committed, rotate it; deleting it from the current tree does not erase Git history.
 
-## Rule lifecycle
-
-A rule has a business `version`, a lifecycle `status`, and last build information.
+## Rule lifecycle in the admin application
 
 ### Create
 
-A new rule is compiled **before** it is persisted. Invalid DRL is rejected and no unusable rule record is created.
+A new DRL is compiled before persistence. Invalid DRL is rejected and no unusable active rule is created.
 
 ### Update
 
-An update is built before the stored active content is replaced:
-
-1. Candidate DRL compiles successfully → cache is activated, content is saved, version increments, successful history snapshot is stored.
-2. Candidate DRL fails → current content/version stays unchanged, the failed candidate is recorded in history for diagnostics, and the last successful container remains active.
-
-This prevents a bad edit from working until restart and then breaking permanently.
+1. Candidate compiles successfully → public `RuleEngine` activates it, DB content is updated, version increments, successful history snapshot is recorded.
+2. Candidate fails → current DB content/version stays unchanged, failed candidate is retained in history for diagnostics, and the last-known-good runtime container remains active.
 
 ### Rollback
 
-Rollback only selects a `SUCCESS` history snapshot containing rule content. The snapshot is copied into a **new** version rather than rewriting history.
+Rollback selects a successful history snapshot containing DRL content and creates a new version from it. Existing history is never rewritten.
 
 ### Disable / delete
 
-Disabling or deleting a rule removes its local compiled container. With Redis refresh enabled, the same cache removal is propagated to other nodes.
+The local `RuleEngine` container is removed. When Redis refresh is enabled, other nodes receive the same invalidation signal.
 
 ## REST API
 
-All endpoints are under `/api/rules`.
+All management endpoints are under `/api/rules`.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/health` | Rule-engine health and loaded container count |
+| `GET` | `/health` | Rule-engine health and loaded count |
 | `GET` | `/list` | List rules |
-| `POST` | `/upload` | Upload and compile a new DRL rule |
-| `POST` | `/validate?name=...` | Compile candidate DRL without activation |
-| `PUT` | `/{name}` | Save content as a new successful version |
-| `PATCH` | `/{name}/status?status=ENABLED|DISABLED` | Enable or disable a rule |
-| `DELETE` | `/{name}` | Delete rule and history |
-| `GET` | `/meta/{name}` | Rule metadata and content |
-| `GET` | `/history/{name}?page=0&size=20` | Paginated build history |
-| `POST` | `/rollback/{name}/{version}` | Create a new version from a successful snapshot |
-| `POST` | `/refresh/{name}` | Rebuild one rule from the database |
-| `POST` | `/reload-all` | Rebuild all enabled rules from the database |
-| `GET` | `/loaded` | Names currently loaded in this JVM |
-| `POST` | `/exec/{name}` | Legacy built-in `Order` example execution |
-| `POST` | `/exec-map/{name}` | Execute with the request JSON object as a `Map` fact |
-
-The response envelope is:
-
-```json
-{
-  "code": 200,
-  "message": "success",
-  "data": {}
-}
-```
-
-## Example: built-in Order rule
-
-```drl
-package rules;
-
-import com.example.ruleengine.Order;
-
-rule "Free Shipping"
-when
-    $order : Order(amount > 100)
-then
-    $order.setFreeShipping(true);
-end
-```
-
-Execute it through the compatibility endpoint:
-
-```bash
-curl -X POST http://localhost:8080/api/rules/exec/free-shipping \
-  -H 'Content-Type: application/json' \
-  -d '{"amount":150}'
-```
-
-## Example: generic Map fact
-
-Rules that use the generic execution endpoint can work directly with a Java `Map`:
-
-```drl
-package rules;
-
-import java.util.Map;
-
-rule "VIP marker"
-when
-    $fact : Map( this["level"] == "VIP" )
-then
-    $fact.put("priority", "HIGH");
-end
-```
-
-```bash
-curl -X POST http://localhost:8080/api/rules/exec-map/vip-rule \
-  -H 'Content-Type: application/json' \
-  -d '{"level":"VIP"}'
-```
+| `POST` | `/upload` | Upload and compile a new rule |
+| `POST` | `/validate?name=...` | Validate DRL without activation |
+| `PUT` | `/{name}` | Save a new successful version |
+| `PATCH` | `/{name}/status?status=ENABLED|DISABLED` | Enable/disable |
+| `DELETE` | `/{name}` | Delete rule/history |
+| `GET` | `/meta/{name}` | Rule metadata/content |
+| `GET` | `/history/{name}?page=0&size=20` | Build history |
+| `POST` | `/rollback/{name}/{version}` | Roll back via a new version |
+| `POST` | `/refresh/{name}` | Rebuild one DB rule |
+| `POST` | `/reload-all` | Reconcile all enabled DB rules |
+| `GET` | `/loaded` | Rules loaded in this JVM |
+| `POST` | `/exec/{name}` | Compatibility `Order` example |
+| `POST` | `/exec-map/{name}` | Execute request JSON as a Map fact |
 
 ## Multi-node refresh
 
-Set the same Redis endpoint on every application node and enable:
+Enable Redis on every admin-server node:
 
 ```bash
 RULE_REDIS_ENABLED=true
 ```
 
-After a successful create, update, rollback, enable, disable or delete operation, the originating node publishes `rule-refresh`. Every node rebuilds or evicts only its local container. Subscribers do **not** write shared build-history rows, preventing duplicate audit records in a cluster.
-
-Redis pub/sub is a cache-invalidation mechanism, not a durable event log. If a node misses a message, startup reload or `/reload-all` reconciles it from PostgreSQL.
+The database remains the source of truth. Redis pub/sub is used only for local runtime cache invalidation/reload and is not treated as a durable event log.
 
 ## Development and CI
 
-GitHub Actions performs:
+GitHub Actions verifies:
 
-1. `mvn clean verify` on Java 8, including rule lifecycle tests.
-2. A Java 17 compile/build compatibility check.
+1. `mvn clean verify` on Java 8, including `spring-rule-core`, auto-configuration and management lifecycle tests.
+2. Java 17 build compatibility.
 3. `npm ci && npm run build` for the Vue frontend.
 
-The most important regression tests cover:
+Key regression guarantees include:
 
-- valid DRL compilation and execution;
-- failed replacement preserving the last successful container;
-- validation not activating a rule;
-- create history containing rollback content;
-- failed updates preserving current content/version;
-- rollback creating a new version from a successful snapshot.
+- public core runtime compiles and executes a standalone fact type;
+- validation does not activate a rule;
+- invalid replacement keeps the last-known-good container;
+- starter auto-configures by default, can be disabled, and backs off for a user bean;
+- management create history stores rollback content;
+- failed management updates preserve active content/version;
+- rollback creates a new version from a successful snapshot.
 
-## Known scope / roadmap
+## Roadmap
 
-The repository is intentionally small. High-value next steps are:
+High-value next steps after v0.2:
 
-- Extract the dynamic compiler into a dedicated reusable core API and add a true Spring Boot auto-configuration starter artifact.
-- Add an authenticated/authorized management surface instead of relying on network trust.
-- Replace `ddl-auto=update` with Flyway/Liquibase migrations for production deployments.
-- Add metrics for compile latency, execution count/failure, active container count, and refresh lag.
-- Add richer fact-type registration / DTO binding instead of only the built-in `Order` example and generic `Map` mode.
-- Add rule-set / agenda-group management and batch execution semantics.
-- Define a supported upgrade line for newer Spring Boot and Drools generations without breaking Java 8 users of this baseline.
+- authenticated/authorized management APIs;
+- Flyway/Liquibase schema migrations instead of `ddl-auto=update`;
+- Micrometer compile/execution/refresh metrics;
+- rule namespaces / rule sets / agenda-group management;
+- fact type adapters and JSON-to-DTO binding;
+- Maven Central publishing and signed release automation;
+- a separate compatibility line for Spring Boot 3 / current Drools while preserving this Java 8 baseline.
 
 ## License
 
