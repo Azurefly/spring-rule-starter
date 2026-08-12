@@ -28,9 +28,14 @@ public class RuleApiKeyAuthenticationFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !properties.isEnabled()
-                || "OPTIONS".equalsIgnoreCase(request.getMethod())
-                || !request.getRequestURI().startsWith("/api/rules");
+        if (!properties.isEnabled() || "OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            return true;
+        }
+        String uri = request.getRequestURI();
+        if ("/actuator/health".equals(uri) || "/actuator/info".equals(uri)) {
+            return true;
+        }
+        return !uri.startsWith("/api/rules") && !uri.startsWith("/actuator/");
     }
 
     @Override
