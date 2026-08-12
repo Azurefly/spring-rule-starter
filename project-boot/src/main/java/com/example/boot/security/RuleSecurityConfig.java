@@ -41,6 +41,7 @@ public class RuleSecurityConfig {
         http.authorizeRequests()
                 .antMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .antMatchers("/actuator/health", "/actuator/info").permitAll()
+                .antMatchers("/actuator/**").hasRole("ADMIN")
                 .antMatchers(HttpMethod.GET, "/api/rules/**").hasAnyRole("READER", "ADMIN")
                 .antMatchers("/api/rules/**").hasRole("ADMIN")
                 .anyRequest().permitAll();
