@@ -1,7 +1,12 @@
-
 package com.example.api.entity;
 
-import javax.persistence.*;
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.GeneratedValue;
+import javax.persistence.GenerationType;
+import javax.persistence.Id;
+import javax.persistence.PrePersist;
+import javax.persistence.Table;
 import java.time.LocalDateTime;
 
 @Entity
@@ -11,21 +16,37 @@ public class RuleBuildHistory {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(nullable = false, length = 120)
     private String ruleName;
+
+    @Column(nullable = false)
     private Integer version;
+
+    @Column(nullable = false, length = 20)
     private String status;
-    
+
     @Column(columnDefinition = "TEXT")
     private String message;
-    
+
     @Column(columnDefinition = "TEXT")
     private String content;
+
+    @Column(length = 100)
     private String builtBy;
+
+    @Column(nullable = false)
     private LocalDateTime builtAt;
 
-    public RuleBuildHistory() { this.builtAt = LocalDateTime.now(); }
+    public RuleBuildHistory() {
+    }
 
-    // getters & setters
+    @PrePersist
+    public void prePersist() {
+        if (builtAt == null) {
+            builtAt = LocalDateTime.now();
+        }
+    }
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public String getRuleName() { return ruleName; }
