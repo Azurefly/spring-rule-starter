@@ -44,7 +44,7 @@ public class RuleApiKeyAuthenticationFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         String supplied = request.getHeader(properties.getHeaderName());
         if (supplied == null || supplied.trim().isEmpty()) {
-            filterChain.doFilter(request, response);
+            reject(response, "authentication_required");
             return;
         }
 
@@ -70,11 +70,15 @@ public class RuleApiKeyAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
+        reject(response, "invalid_api_key");
+    }
+
+    private void reject(HttpServletResponse response, String message) throws IOException {
         SecurityContextHolder.clearContext();
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
-        response.getWriter().write("{\"code\":401,\"message\":\"invalid_api_key\",\"data\":null}");
+        response.getWriter().write("{\"code\":401,\"message\":\"" + message + "\",\"data\":null}");
     }
 
     private boolean matches(String expected, String supplied) {
