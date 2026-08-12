@@ -1,7 +1,13 @@
-
 package com.example.api.entity;
 
-import javax.persistence.*;
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.GeneratedValue;
+import javax.persistence.GenerationType;
+import javax.persistence.Id;
+import javax.persistence.PrePersist;
+import javax.persistence.PreUpdate;
+import javax.persistence.Table;
 import java.time.LocalDateTime;
 
 @Entity
@@ -11,26 +17,58 @@ public class RuleMeta {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(unique = true)
+    @Column(nullable = false, unique = true, length = 120)
     private String name;
 
-    private String type; // DROOLS | CUSTOM
-    
-    @Column(columnDefinition = "TEXT")
+    @Column(nullable = false, length = 32)
+    private String type;
+
+    @Column(columnDefinition = "TEXT", nullable = false)
     private String content;
 
+    @Column(nullable = false, length = 20)
     private String status;
-    private Integer version = 1;
-    private String lastBuildStatus;
-    private String lastBuildMessage;
-    private java.time.LocalDateTime lastBuildAt;
 
+    @Column(nullable = false)
+    private Integer version = 1;
+
+    @Column(length = 20)
+    private String lastBuildStatus;
+
+    @Column(columnDefinition = "TEXT")
+    private String lastBuildMessage;
+
+    private LocalDateTime lastBuildAt;
     private String createdBy;
     private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
 
-    public RuleMeta() { this.createdAt = LocalDateTime.now(); }
+    public RuleMeta() {
+    }
 
-    // getters & setters
+    @PrePersist
+    public void prePersist() {
+        LocalDateTime now = LocalDateTime.now();
+        if (createdAt == null) {
+            createdAt = now;
+        }
+        updatedAt = now;
+        if (version == null) {
+            version = 1;
+        }
+        if (status == null) {
+            status = "ENABLED";
+        }
+        if (type == null) {
+            type = "DROOLS";
+        }
+    }
+
+    @PreUpdate
+    public void preUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public String getName() { return name; }
@@ -45,13 +83,14 @@ public class RuleMeta {
     public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
-
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
     public Integer getVersion() { return version; }
     public void setVersion(Integer version) { this.version = version; }
     public String getLastBuildStatus() { return lastBuildStatus; }
     public void setLastBuildStatus(String lastBuildStatus) { this.lastBuildStatus = lastBuildStatus; }
     public String getLastBuildMessage() { return lastBuildMessage; }
     public void setLastBuildMessage(String lastBuildMessage) { this.lastBuildMessage = lastBuildMessage; }
-    public java.time.LocalDateTime getLastBuildAt() { return lastBuildAt; }
-    public void setLastBuildAt(java.time.LocalDateTime lastBuildAt) { this.lastBuildAt = lastBuildAt; }
+    public LocalDateTime getLastBuildAt() { return lastBuildAt; }
+    public void setLastBuildAt(LocalDateTime lastBuildAt) { this.lastBuildAt = lastBuildAt; }
 }
