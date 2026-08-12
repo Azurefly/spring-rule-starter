@@ -1,35 +1,43 @@
-
 package com.example.api.service.impl;
 
-import com.example.api.entity.RuleMeta;
+import com.example.api.drools.BuildResult;
+import com.example.api.drools.KieManager;
 import com.example.api.entity.RuleBuildHistory;
-import com.example.api.repository.RuleRepository;
+import com.example.api.entity.RuleMeta;
 import com.example.api.repository.RuleBuildHistoryRepository;
+import com.example.api.repository.RuleRepository;
 import com.example.api.service.RuleService;
 import com.example.common.Result;
 import com.example.ruleengine.Order;
-import com.example.api.drools.KieManager;
-import com.example.ruleengine.drools.DroolsHelper;
-import javax.transaction.Transactional;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Service;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import java.time.LocalDateTime;
-import org.springframework.web.multipart.MultipartFile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
+import javax.transaction.Transactional;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Scanner;
+import java.util.Set;
+import java.util.regex.Pattern;
 
 @Service
 @Transactional
 public class RuleServiceImpl implements RuleService {
     private static final Logger logger = LoggerFactory.getLogger(RuleServiceImpl.class);
+    private static final Pattern RULE_NAME_PATTERN = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,119}");
 
     @Autowired
     private RuleRepository ruleRepository;
@@ -40,326 +48,403 @@ public class RuleServiceImpl implements RuleService {
     @Autowired(required = false)
     private StringRedisTemplate redisTemplate;
 
-    @Autowired(required = false)
-    private DroolsHelper droolsHelper;
-
     @Autowired
     private KieManager kieManager;
 
+    @Value("${rule.redis.enabled:false}")
+    private boolean redisEnabled;
+
     @Override
     public Result<Void> saveRule(String name, String type, MultipartFile contentFile) throws Exception {
-        if (name == null || name.trim().isEmpty()) {
-            throw new RuntimeException("Rule name cannot be null or empty");
-        }
-        if (type == null || type.trim().isEmpty()) {
-            throw new RuntimeException("Rule type cannot be null or empty");
-        }
+        String ruleName = requireValidName(name);
+        String ruleType = normalizeType(type);
         if (contentFile == null || contentFile.isEmpty()) {
-            throw new RuntimeException("Content file cannot be null or empty");
+            return Result.fail("Rule file cannot be empty");
         }
-        
-        Optional<RuleMeta> exists = ruleRepository.findByName(name);
-        if (exists.isPresent()) {
-            throw new RuntimeException("rule exists: " + name);
+        if (ruleRepository.findByName(ruleName).isPresent()) {
+            return Result.fail("Rule already exists: " + ruleName);
         }
-        
-        String content;
-        try (InputStream in = contentFile.getInputStream(); Scanner sc = new Scanner(in, StandardCharsets.UTF_8.name())) {
-            sc.useDelimiter("\\A");
-            content = sc.hasNext() ? sc.next() : "";
+
+        String content = readUtf8(contentFile);
+        if (content.trim().isEmpty()) {
+            return Result.fail("Rule content cannot be empty");
         }
-        
-        RuleMeta m = new RuleMeta();
-        m.setName(name);
-        m.setType(type);
-        m.setContent(content);
-        m.setStatus("ENABLED");
-        m.setVersion(1);
-        ruleRepository.save(m);
-        
-        // Persist DRL in DB only and trigger build (no write-back to source tree)
+
+        BuildResult build = kieManager.buildOrUpdateReport(ruleName, content);
+        if (build.getStatus() != BuildResult.Status.SUCCESS) {
+            return Result.fail(build.getMessage());
+        }
+
         try {
-            logger.info("=== RuleServiceImpl.saveRule ===");
-            logger.info("Calling kieManager.buildOrUpdateReport for: {}", m.getName());
-            logger.info("Content length: {}", (m.getContent() != null ? m.getContent().length() : "null"));
-            logger.debug("KieManager instance: {}", (kieManager != null ? "NOT NULL" : "NULL"));
-            
-            if (kieManager == null) {
-                throw new RuntimeException("KieManager is null - dependency injection failed");
-            }
-            
-            com.example.api.drools.BuildResult res = kieManager.buildOrUpdateReport(m.getName(), m.getContent());
-            logger.info("Build result status: {}", res.getStatus());
-            logger.info("Build result message: {}", res.getMessage());
-            
-            m.setLastBuildAt(LocalDateTime.now());
-            m.setLastBuildStatus(res.getStatus().name());
-            m.setLastBuildMessage(res.getMessage());
-            ruleRepository.save(m);
-            
-            // 如果构建失败，记录错误信息
-            if (res.getStatus() == com.example.api.drools.BuildResult.Status.FAILURE) {
-                logger.error("Rule build failed for {}: {}", m.getName(), res.getMessage());
-            }
-            
-            // record build history
-            if (historyRepository != null) {
-                try {
-                    RuleBuildHistory h = new RuleBuildHistory();
-                    h.setRuleName(m.getName()); 
-                    h.setVersion(m.getVersion()); 
-                    h.setStatus(res.getStatus().name()); 
-                    h.setMessage(res.getMessage()); 
-                    h.setBuiltBy("system");
-                    historyRepository.save(h);
-                } catch (Exception hx) { 
-                    hx.printStackTrace(); 
-                }
-            }
-            // publish redis refresh for cluster nodes
-            if (redisTemplate != null) redisTemplate.convertAndSend("rule-refresh", m.getName());
-        } catch (Exception ex) {
-            // log and continue; building the container is best-effort here
-            try {
-                java.io.FileWriter writer = new java.io.FileWriter("/tmp/rule_service_debug.log", true);
-                writer.write("=== Exception in RuleServiceImpl.saveRule ===\n");
-                writer.write("Exception type: " + ex.getClass().getSimpleName() + "\n");
-                writer.write("Exception message: " + ex.getMessage() + "\n");
-                writer.write("Stack trace: " + java.util.Arrays.toString(ex.getStackTrace()) + "\n");
-                writer.close();
-            } catch (Exception logEx) {
-                // ignore
-            }
-            
-            System.err.println("=== Exception in RuleServiceImpl.saveRule ===");
-            System.err.println("Exception type: " + ex.getClass().getSimpleName());
-            System.err.println("Exception message: " + ex.getMessage());
-            ex.printStackTrace();
-            
-            // Update the rule with build failure status
-            m.setLastBuildAt(LocalDateTime.now());
-            m.setLastBuildStatus("FAILURE");
-            String errorMessage = ex.getMessage() != null ? ex.getMessage() : "Unknown error occurred: " + ex.getClass().getSimpleName();
-            if (ex.getCause() != null) {
-                errorMessage += " (Caused by: " + ex.getCause().getClass().getSimpleName() + " - " + ex.getCause().getMessage() + ")";
-            }
-            m.setLastBuildMessage(errorMessage);
-            try {
-                ruleRepository.save(m);
-                System.err.println("Rule saved with FAILURE status");
-            } catch (Exception saveEx) {
-                System.err.println("Failed to save rule: " + saveEx.getMessage());
-                saveEx.printStackTrace();
-            }
+            RuleMeta meta = new RuleMeta();
+            meta.setName(ruleName);
+            meta.setType(ruleType);
+            meta.setContent(content);
+            meta.setStatus("ENABLED");
+            meta.setVersion(1);
+            applyBuildResult(meta, build);
+            ruleRepository.save(meta);
+            recordHistory(meta, content, build, "create");
+            publishRefresh(ruleName);
+            return Result.success();
+        } catch (RuntimeException ex) {
+            kieManager.removeContainer(ruleName);
+            throw ex;
         }
-        return Result.success();
     }
 
     @Override
     public Result<List<RuleMeta>> listRules() {
-        try {
-            return Result.success(ruleRepository.findAll());
-        } catch (Exception e) {
-            return Result.fail(e.getMessage());
-        }
+        return Result.success(ruleRepository.findAllByOrderByUpdatedAtDesc());
     }
 
     @Override
     public Result<Object> executeByName(String name, Map<String, Object> fact) throws Exception {
-        if (name == null || name.trim().isEmpty()) {
-            throw new RuntimeException("Rule name cannot be null or empty");
-        }
+        RuleMeta meta = requireExecutableRule(name);
         if (fact == null) {
-            throw new RuntimeException("Fact cannot be null");
+            return Result.fail("Fact cannot be null");
         }
-        RuleMeta meta = ruleRepository.findByName(name).orElseThrow(() -> new RuntimeException("rule not found: " + name));
-        if (!"DROOLS".equalsIgnoreCase(meta.getType())) {
-            throw new RuntimeException("unsupported rule type: " + meta.getType());
-        }
-        // For demo: we expect a JSON with 'amount' to map to Order
-        Object amountObj = fact.get("amount");
-        double amount = 0.0;
-        if (amountObj instanceof Number) amount = ((Number) amountObj).doubleValue();
-        else if (amountObj != null) amount = Double.parseDouble(amountObj.toString());
-        Order o = new Order(amount);
 
-        // Use KieManager to fire rules for the specific rule name
-        // First ensure the container is built, try loading from database first
-        if (!kieManager.hasContainer(name)) {
-            System.out.println("=== DEBUG: Container not found for " + name + ", attempting to load from database ===");
-            // Try to load from database first
-            com.example.api.drools.BuildResult res = kieManager.loadRuleFromDatabase(name);
-            System.out.println("=== DEBUG: Load from database result: " + res.getStatus() + " - " + res.getMessage() + " ===");
-            if (res.getStatus() != com.example.api.drools.BuildResult.Status.SUCCESS) {
-                System.out.println("=== DEBUG: Database load failed, trying to build from content ===");
-                // Fallback to building from stored content
-                res = kieManager.buildOrUpdateReport(name, meta.getContent());
-                System.out.println("=== DEBUG: Build from content result: " + res.getStatus() + " - " + res.getMessage() + " ===");
-                if (res.getStatus() != com.example.api.drools.BuildResult.Status.SUCCESS) {
-                    throw new RuntimeException("Failed to build rule container: " + res.getMessage());
-                }
-            }
-        } else {
-            System.out.println("=== DEBUG: Container found for " + name + " ===");
+        Object amountObject = fact.get("amount");
+        if (amountObject == null) {
+            return Result.fail("The legacy Order execution endpoint requires an 'amount' field");
         }
-        kieManager.fireRules(name, o);
-        return Result.success(o);
+
+        double amount;
+        try {
+            amount = amountObject instanceof Number
+                    ? ((Number) amountObject).doubleValue()
+                    : Double.parseDouble(String.valueOf(amountObject));
+        } catch (NumberFormatException ex) {
+            return Result.fail("amount must be numeric");
+        }
+
+        ensureContainer(meta);
+        Order order = new Order(amount);
+        kieManager.fireRules(meta.getName(), order);
+        return Result.success(order);
     }
-    // rebuild container explicitly (used by controller refresh)
+
+    @Override
+    public Result<Map<String, Object>> executeMapByName(String name, Map<String, Object> fact) throws Exception {
+        RuleMeta meta = requireExecutableRule(name);
+        if (fact == null) {
+            return Result.fail("Fact cannot be null");
+        }
+        ensureContainer(meta);
+        Map<String, Object> mutableFact = new LinkedHashMap<>(fact);
+        kieManager.fireRules(meta.getName(), mutableFact);
+        return Result.success(mutableFact);
+    }
+
     @Override
     public Result<Void> updateRuleContent(String name, String content) throws Exception {
-        if (name == null || name.trim().isEmpty()) {
-            throw new RuntimeException("Rule name cannot be null or empty");
+        String ruleName = requireValidName(name);
+        if (content == null || content.trim().isEmpty()) {
+            return Result.fail("Rule content cannot be empty");
         }
-        if (content == null) {
-            throw new RuntimeException("Content cannot be null");
+
+        RuleMeta meta = ruleRepository.findByName(ruleName)
+                .orElseThrow(() -> new IllegalArgumentException("Rule not found: " + ruleName));
+        ensureDroolsType(meta);
+
+        int nextVersion = meta.getVersion() == null ? 1 : meta.getVersion() + 1;
+        String oldContent = meta.getContent();
+        boolean wasEnabled = "ENABLED".equalsIgnoreCase(meta.getStatus());
+
+        BuildResult build = kieManager.buildOrUpdateReport(ruleName, content);
+        if (build.getStatus() != BuildResult.Status.SUCCESS) {
+            applyBuildResult(meta, build);
+            ruleRepository.save(meta);
+            recordHistory(ruleName, nextVersion, content, build, "update-validation");
+            return Result.fail(build.getMessage());
         }
-        RuleMeta meta = ruleRepository.findByName(name).orElseThrow(() -> new RuntimeException("rule not found: " + name));
-        meta.setContent(content);
-        meta.setVersion(meta.getVersion() == null ? 1 : meta.getVersion() + 1);
-        ruleRepository.save(meta);
-        // attempt rebuild
+
         try {
-            com.example.api.drools.BuildResult res = kieManager.buildOrUpdateReport(meta.getName(), meta.getContent());
-            meta.setLastBuildAt(LocalDateTime.now());
-            meta.setLastBuildStatus(res.getStatus().name());
-            meta.setLastBuildMessage(res.getMessage());
+            meta.setContent(content);
+            meta.setVersion(nextVersion);
+            applyBuildResult(meta, build);
             ruleRepository.save(meta);
-            
-            // 如果构建失败，记录错误信息
-            if (res.getStatus() == com.example.api.drools.BuildResult.Status.FAILURE) {
-                System.err.println("Rule build failed for " + meta.getName() + ": " + res.getMessage());
+            recordHistory(meta, content, build, "update");
+            if (!wasEnabled) {
+                kieManager.removeContainer(ruleName);
             }
-            
-            if (redisTemplate != null) redisTemplate.convertAndSend("rule-refresh", meta.getName());
-        } catch (Exception ex) {
-            // Update the rule with build failure status
-            meta.setLastBuildAt(LocalDateTime.now());
-            meta.setLastBuildStatus("FAILURE");
-            meta.setLastBuildMessage(ex.getMessage());
-            ruleRepository.save(meta);
-            throw ex; // Re-throw to be handled by the caller
+            publishRefresh(ruleName);
+            return Result.success();
+        } catch (RuntimeException ex) {
+            restoreContainer(ruleName, oldContent, wasEnabled);
+            throw ex;
         }
+    }
+
+    @Override
+    public Result<Void> validateRule(String name, String content) {
+        try {
+            String ruleName = requireValidName(name);
+            if (content == null || content.trim().isEmpty()) {
+                return Result.fail("Rule content cannot be empty");
+            }
+            BuildResult result = kieManager.validateReport(ruleName, content);
+            return result.getStatus() == BuildResult.Status.SUCCESS
+                    ? Result.success()
+                    : Result.fail(result.getMessage());
+        } catch (Exception ex) {
+            return Result.fail(ex.getMessage());
+        }
+    }
+
+    @Override
+    public Result<Void> setRuleStatus(String name, String status) {
+        String ruleName = requireValidName(name);
+        String normalizedStatus = normalizeStatus(status);
+        RuleMeta meta = ruleRepository.findByName(ruleName)
+                .orElseThrow(() -> new IllegalArgumentException("Rule not found: " + ruleName));
+
+        if (normalizedStatus.equalsIgnoreCase(meta.getStatus())) {
+            return Result.success();
+        }
+
+        if ("DISABLED".equals(normalizedStatus)) {
+            meta.setStatus("DISABLED");
+            ruleRepository.save(meta);
+            kieManager.removeContainer(ruleName);
+            publishRefresh(ruleName);
+            return Result.success();
+        }
+
+        ensureDroolsType(meta);
+        BuildResult build = kieManager.buildOrUpdateReport(ruleName, meta.getContent());
+        applyBuildResult(meta, build);
+        if (build.getStatus() != BuildResult.Status.SUCCESS) {
+            ruleRepository.save(meta);
+            recordHistory(meta, meta.getContent(), build, "enable-validation");
+            return Result.fail(build.getMessage());
+        }
+
+        meta.setStatus("ENABLED");
+        ruleRepository.save(meta);
+        recordHistory(meta, meta.getContent(), build, "enable");
+        publishRefresh(ruleName);
         return Result.success();
     }
 
     @Override
-    public Result<com.example.api.entity.RuleMeta> getRule(String name) {
-        if (name == null || name.trim().isEmpty()) {
-            return Result.fail("Rule name cannot be null or empty");
+    public Result<Void> deleteRule(String name) {
+        String ruleName = requireValidName(name);
+        RuleMeta meta = ruleRepository.findByName(ruleName).orElse(null);
+        if (meta == null) {
+            return Result.fail("Rule not found: " + ruleName);
         }
-        return Result.success(ruleRepository.findByName(name).orElse(null));
+
+        if (historyRepository != null) {
+            historyRepository.deleteByRuleName(ruleName);
+        }
+        ruleRepository.delete(meta);
+        kieManager.removeContainer(ruleName);
+        publishRefresh(ruleName);
+        return Result.success();
     }
 
-    // This method is called via reflection from RuleController.refresh()
-    @SuppressWarnings("unused")
-    private void rebuildContainerForRule(String name) {
-        if (name == null || name.trim().isEmpty()) {
-            throw new RuntimeException("Rule name cannot be null or empty");
-        }
-        RuleMeta meta = ruleRepository.findByName(name).orElseThrow(() -> new RuntimeException("rule not found: " + name));
+    @Override
+    public Result<RuleMeta> getRule(String name) {
         try {
-            kieManager.buildOrUpdate(meta.getName(), meta.getContent());
+            String ruleName = requireValidName(name);
+            Optional<RuleMeta> meta = ruleRepository.findByName(ruleName);
+            return meta.isPresent() ? Result.success(meta.get()) : Result.fail("Rule not found: " + ruleName);
         } catch (Exception ex) {
-            // Update the rule with build failure status
-            meta.setLastBuildAt(LocalDateTime.now());
-            meta.setLastBuildStatus("FAILURE");
-            meta.setLastBuildMessage(ex.getMessage());
-            ruleRepository.save(meta);
-            throw ex; // Re-throw to be handled by the caller
-        }
-    }
-
-    // expose for controller access
-    public RuleMeta getRuleByName(String name) {
-        if (name == null || name.trim().isEmpty()) {
-            return null;
-        }
-        return ruleRepository.findByName(name).orElse(null);
-    }
-
-    @Override
-    public Result<java.util.Map<String,Object>> getBuildHistoryPage(String name, int page, int size) {
-        try {
-            if (name == null || name.trim().isEmpty()) {
-                return Result.fail("Rule name cannot be null or empty");
-            }
-            if (historyRepository == null) {
-                return Result.fail("history repository is not available");
-            }
-            org.springframework.data.domain.Pageable pg = org.springframework.data.domain.PageRequest.of(page < 0 ? 0 : page, size <= 0 ? 10 : size);
-            org.springframework.data.domain.Page<com.example.api.entity.RuleBuildHistory> p = historyRepository.findByRuleNameOrderByBuiltAtDesc(name, pg);
-            java.util.Map<String,Object> m = new java.util.HashMap<>();
-            m.put("items", p.getContent());
-            m.put("total", p.getTotalElements());
-            m.put("page", p.getNumber());
-            m.put("size", p.getSize());
-            return Result.success(m);
-        } catch (Exception e) {
-            return Result.fail(e.getMessage());
+            return Result.fail(ex.getMessage());
         }
     }
 
     @Override
-    public Result<java.util.List<com.example.api.entity.RuleBuildHistory>> getBuildHistory(String name) {
+    public Result<Map<String, Object>> getBuildHistoryPage(String name, int page, int size) {
         try {
-            if (name == null || name.trim().isEmpty()) {
-                return Result.fail("Rule name cannot be null or empty");
-            }
+            String ruleName = requireValidName(name);
             if (historyRepository == null) {
-                return Result.fail("history repository is not available");
+                return Result.fail("History repository is not available");
             }
-            return Result.success(historyRepository.findByRuleNameOrderByBuiltAtDesc(name));
-        } catch (Exception e) {
-            return Result.fail(e.getMessage());
+            int safePage = Math.max(0, page);
+            int safeSize = Math.min(100, Math.max(1, size));
+            Pageable pageable = PageRequest.of(safePage, safeSize);
+            Page<RuleBuildHistory> history = historyRepository.findByRuleNameOrderByBuiltAtDesc(ruleName, pageable);
+            Map<String, Object> response = new HashMap<>();
+            response.put("items", history.getContent());
+            response.put("total", history.getTotalElements());
+            response.put("page", history.getNumber());
+            response.put("size", history.getSize());
+            return Result.success(response);
+        } catch (Exception ex) {
+            return Result.fail(ex.getMessage());
+        }
+    }
+
+    @Override
+    public Result<List<RuleBuildHistory>> getBuildHistory(String name) {
+        try {
+            String ruleName = requireValidName(name);
+            if (historyRepository == null) {
+                return Result.fail("History repository is not available");
+            }
+            return Result.success(historyRepository.findByRuleNameOrderByBuiltAtDesc(ruleName));
+        } catch (Exception ex) {
+            return Result.fail(ex.getMessage());
         }
     }
 
     @Override
     public Result<Void> rollbackRuleToVersion(String name, Integer version) throws Exception {
-        if (name == null || name.trim().isEmpty()) {
-            throw new RuntimeException("Rule name cannot be null or empty");
+        String ruleName = requireValidName(name);
+        if (version == null || version < 1) {
+            return Result.fail("Version must be a positive integer");
         }
-        if (version == null) {
-            throw new RuntimeException("Version cannot be null");
-        }
-        RuleMeta meta = ruleRepository.findByName(name).orElseThrow(() -> new RuntimeException("rule not found: " + name));
-        // find the history entry with requested version (latest by builtAt)
         if (historyRepository == null) {
-            throw new RuntimeException("history repository is not available");
+            return Result.fail("History repository is not available");
         }
-        java.util.List<com.example.api.entity.RuleBuildHistory> list = historyRepository.findByRuleNameOrderByBuiltAtDesc(name);
-        com.example.api.entity.RuleBuildHistory target = null;
-        for (com.example.api.entity.RuleBuildHistory h : list) {
-            if (h.getVersion() != null && h.getVersion().intValue() == version.intValue()) { target = h; break; }
-        }
-        if (target == null) throw new RuntimeException("history for version not found: " + version);
-        // apply content from history as new version
-        meta.setContent(target.getContent());
-        meta.setVersion(meta.getVersion() == null ? 1 : meta.getVersion() + 1);
-        ruleRepository.save(meta);
-        // attempt rebuild
-        try {
-            com.example.api.drools.BuildResult res = kieManager.buildOrUpdateReport(meta.getName(), meta.getContent());
-            meta.setLastBuildAt(LocalDateTime.now());
-            meta.setLastBuildStatus(res.getStatus().name());
-            meta.setLastBuildMessage(res.getMessage());
-            ruleRepository.save(meta);
-            try {
-                com.example.api.entity.RuleBuildHistory h2 = new com.example.api.entity.RuleBuildHistory();
-                h2.setRuleName(meta.getName()); h2.setVersion(meta.getVersion()); h2.setStatus(res.getStatus().name()); h2.setMessage(res.getMessage()); h2.setContent(meta.getContent()); h2.setBuiltBy("rollback");
-                historyRepository.save(h2);
-            } catch (Exception hx) { hx.printStackTrace(); }
-            if (redisTemplate != null) redisTemplate.convertAndSend("rule-refresh", meta.getName());
-        } catch (Exception ex) {
-            // Update the rule with build failure status
-            meta.setLastBuildAt(LocalDateTime.now());
-            meta.setLastBuildStatus("FAILURE");
-            meta.setLastBuildMessage(ex.getMessage());
-            ruleRepository.save(meta);
-            throw ex; // Re-throw to be handled by the caller
-        }
-        return Result.success();
-}
 
+        RuleMeta meta = ruleRepository.findByName(ruleName)
+                .orElseThrow(() -> new IllegalArgumentException("Rule not found: " + ruleName));
+        RuleBuildHistory target = historyRepository
+                .findFirstByRuleNameAndVersionAndStatusOrderByBuiltAtDesc(ruleName, version, BuildResult.Status.SUCCESS.name())
+                .orElse(null);
+        if (target == null || target.getContent() == null || target.getContent().trim().isEmpty()) {
+            return Result.fail("No successful rollback snapshot found for version: " + version);
+        }
+
+        int nextVersion = meta.getVersion() == null ? 1 : meta.getVersion() + 1;
+        String oldContent = meta.getContent();
+        boolean wasEnabled = "ENABLED".equalsIgnoreCase(meta.getStatus());
+        BuildResult build = kieManager.buildOrUpdateReport(ruleName, target.getContent());
+        if (build.getStatus() != BuildResult.Status.SUCCESS) {
+            recordHistory(ruleName, nextVersion, target.getContent(), build, "rollback-validation");
+            return Result.fail("Historical rule no longer compiles: " + build.getMessage());
+        }
+
+        try {
+            meta.setContent(target.getContent());
+            meta.setVersion(nextVersion);
+            applyBuildResult(meta, build);
+            ruleRepository.save(meta);
+            recordHistory(meta, meta.getContent(), build, "rollback:v" + version);
+            if (!wasEnabled) {
+                kieManager.removeContainer(ruleName);
+            }
+            publishRefresh(ruleName);
+            return Result.success();
+        } catch (RuntimeException ex) {
+            restoreContainer(ruleName, oldContent, wasEnabled);
+            throw ex;
+        }
+    }
+
+    @Override
+    public Result<Set<String>> getLoadedRuleNames() {
+        return Result.success(kieManager.getLoadedRuleNames());
+    }
+
+    private RuleMeta requireExecutableRule(String name) {
+        String ruleName = requireValidName(name);
+        RuleMeta meta = ruleRepository.findByName(ruleName)
+                .orElseThrow(() -> new IllegalArgumentException("Rule not found: " + ruleName));
+        ensureDroolsType(meta);
+        if (!"ENABLED".equalsIgnoreCase(meta.getStatus())) {
+            throw new IllegalStateException("Rule is disabled: " + ruleName);
+        }
+        return meta;
+    }
+
+    private void ensureContainer(RuleMeta meta) {
+        if (kieManager.hasContainer(meta.getName())) {
+            return;
+        }
+        BuildResult load = kieManager.loadRuleFromDatabase(meta.getName());
+        if (load.getStatus() != BuildResult.Status.SUCCESS) {
+            throw new IllegalStateException("Failed to load rule: " + load.getMessage());
+        }
+    }
+
+    private void ensureDroolsType(RuleMeta meta) {
+        if (!"DROOLS".equalsIgnoreCase(meta.getType())) {
+            throw new IllegalArgumentException("Unsupported rule type: " + meta.getType());
+        }
+    }
+
+    private String requireValidName(String name) {
+        if (name == null || !RULE_NAME_PATTERN.matcher(name.trim()).matches()) {
+            throw new IllegalArgumentException("Rule name must match [A-Za-z0-9][A-Za-z0-9._-]{0,119}");
+        }
+        return name.trim();
+    }
+
+    private String normalizeType(String type) {
+        String normalized = type == null ? "DROOLS" : type.trim().toUpperCase();
+        if (!"DROOLS".equals(normalized)) {
+            throw new IllegalArgumentException("Only DROOLS rules are currently supported");
+        }
+        return normalized;
+    }
+
+    private String normalizeStatus(String status) {
+        if (status == null) {
+            throw new IllegalArgumentException("Status cannot be null");
+        }
+        String normalized = status.trim().toUpperCase();
+        if (!"ENABLED".equals(normalized) && !"DISABLED".equals(normalized)) {
+            throw new IllegalArgumentException("Status must be ENABLED or DISABLED");
+        }
+        return normalized;
+    }
+
+    private String readUtf8(MultipartFile file) throws Exception {
+        try (InputStream input = file.getInputStream();
+             Scanner scanner = new Scanner(input, StandardCharsets.UTF_8.name())) {
+            scanner.useDelimiter("\\A");
+            return scanner.hasNext() ? scanner.next() : "";
+        }
+    }
+
+    private void applyBuildResult(RuleMeta meta, BuildResult build) {
+        meta.setLastBuildAt(LocalDateTime.now());
+        meta.setLastBuildStatus(build.getStatus().name());
+        meta.setLastBuildMessage(build.getMessage());
+    }
+
+    private void recordHistory(RuleMeta meta, String content, BuildResult build, String builtBy) {
+        recordHistory(meta.getName(), meta.getVersion(), content, build, builtBy);
+    }
+
+    private void recordHistory(String ruleName, Integer version, String content, BuildResult build, String builtBy) {
+        if (historyRepository == null) {
+            return;
+        }
+        RuleBuildHistory history = new RuleBuildHistory();
+        history.setRuleName(ruleName);
+        history.setVersion(version);
+        history.setStatus(build.getStatus().name());
+        history.setMessage(build.getMessage());
+        history.setContent(content);
+        history.setBuiltBy(builtBy);
+        historyRepository.save(history);
+    }
+
+    private void publishRefresh(String ruleName) {
+        if (!redisEnabled || redisTemplate == null) {
+            return;
+        }
+        try {
+            redisTemplate.convertAndSend("rule-refresh", ruleName);
+        } catch (Exception ex) {
+            logger.warn("Rule [{}] was saved, but Redis refresh notification failed: {}", ruleName, ex.getMessage());
+        }
+    }
+
+    private void restoreContainer(String ruleName, String oldContent, boolean shouldBeEnabled) {
+        if (!shouldBeEnabled || oldContent == null || oldContent.trim().isEmpty()) {
+            kieManager.removeContainer(ruleName);
+            return;
+        }
+        BuildResult restore = kieManager.buildOrUpdateReport(ruleName, oldContent);
+        if (restore.getStatus() != BuildResult.Status.SUCCESS) {
+            logger.error("Failed to restore previous active container for rule [{}]: {}", ruleName, restore.getMessage());
+        }
+    }
 }
